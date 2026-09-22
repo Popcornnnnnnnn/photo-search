@@ -1,5 +1,7 @@
 # Photo Search
 
+**English** · [简体中文](README.zh-CN.md)
+
 Local-first semantic search for an Apple Photos library.
 
 ## Demo
@@ -48,5 +50,4 @@ The App's **Settings → Models** page manages local and cloud
 OpenAI-compatible providers. Endpoint and model configuration is stored in the
 private runtime directory; API keys are stored in macOS Keychain.
 
-See [PROJECT.md](PROJECT.md) for architecture and continuity notes and
-[backend/README.md](backend/README.md) for CLI details.
+See [backend/README.md](backend/README.md) for CLI and indexing details.
