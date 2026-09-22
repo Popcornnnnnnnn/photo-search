@@ -20,30 +20,46 @@ struct LeadingAccessoryView: View {
     @Bindable var ui: UIState
 
     var body: some View {
-        // Neutral state (no persistent highlight); tooltip reflects the action.
-        IconButton(systemName: "rectangle.lefthalf.inset.filled",
-                   tooltip: ui.leftSidebarVisible ? "Hide sidebar" : "Show sidebar") {
-            ui.leftSidebarVisible.toggle()
+        Group {
+            if ui.leftSidebarVisible {
+                IconButton(systemName: "rectangle.lefthalf.inset.filled",
+                           tooltip: "Hide sidebar") {
+                    ui.leftSidebarVisible = false
+                }
+                .padding(.leading, 6)
+            }
         }
-        .padding(.leading, 6)
+        .frame(width: Layout.leadingAccessoryWidth, height: Layout.accessoryHeight)
     }
 }
 
 /// Trailing accessory: the settings cog and the right-panel toggle (rightmost).
 struct TrailingAccessoryView: View {
     @Bindable var ui: UIState
+    let store: PhotoSearchStore
 
     var body: some View {
-        HStack(spacing: 2) {
-            IconButton(systemName: "gearshape",
-                       tooltip: "Open settings") {
-                ui.showSettings.toggle()
-            }
-            IconButton(systemName: "rectangle.righthalf.inset.filled",
-                       tooltip: ui.rightSidebarVisible ? "Hide panel" : "Show panel") {
-                ui.rightSidebarVisible.toggle()
+        Group {
+            if panelVisible {
+                HStack(spacing: 2) {
+                    IconButton(systemName: "gearshape",
+                               tooltip: "Open settings") {
+                        ui.showSettings.toggle()
+                    }
+                    if !store.isViewerPresented {
+                        IconButton(systemName: "rectangle.righthalf.inset.filled",
+                                   tooltip: "Hide info") {
+                            ui.rightSidebarVisible = false
+                        }
+                    }
+                }
+                .padding(.trailing, 8)
             }
         }
-        .padding(.trailing, 8)
+        .frame(width: Layout.trailingAccessoryWidth, height: Layout.accessoryHeight)
+    }
+
+    private var panelVisible: Bool {
+        store.isViewerPresented ? store.viewerInfoVisible : ui.rightSidebarVisible
     }
 }

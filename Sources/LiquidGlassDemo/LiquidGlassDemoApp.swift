@@ -54,7 +54,7 @@ struct LiquidGlassDemoApp: App {
         // Single-window scene (not WindowGroup): one instance ever, so there are
         // no File ▸ New Window duplicates and `openWindow(id:)` from the tray
         // always brings the same window to front.
-        Window("LiquidGlassDemo", id: "main") {
+        Window("Photo Search", id: "main") {
             ContentView()
                 // Room for the sidebars + a padded main column on all sides.
                 .frame(minWidth: 820, minHeight: 560)
@@ -106,7 +106,7 @@ private struct TrayMenu: View {
 
     var body: some View {
         @Bindable var theme = theme
-        Button("Open LiquidGlassDemo") {
+        Button("Open Photo Search") {
             // Single `Window` scene: this reopens it when closed, focuses it
             // when visible — never a duplicate.
             openWindow(id: "main")
@@ -124,7 +124,7 @@ private struct TrayMenu: View {
         Button("Check for Updates…") { updater.checkForUpdates() }
             .disabled(!updater.canCheckForUpdates)
         Divider()
-        Button("Quit LiquidGlassDemo") { NSApp.terminate(nil) }
+        Button("Quit Photo Search") { NSApp.terminate(nil) }
     }
 }
 

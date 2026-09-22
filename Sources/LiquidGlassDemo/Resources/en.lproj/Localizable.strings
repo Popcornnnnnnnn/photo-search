@@ -2,7 +2,7 @@
    de.lproj/Localizable.strings (or a new <lang>.lproj) and expose it in L10n. */
 "Settings" = "Settings";
 "Launch at Login" = "Launch at Login";
-"Open LiquidGlassDemo automatically when you log in." = "Open LiquidGlassDemo automatically when you log in.";
+"Open Photo Search automatically when you log in." = "Open Photo Search automatically when you log in.";
 "Only available in the installed app." = "Only available in the installed app.";
 "Theme" = "Theme";
 "Search themes…" = "Search themes…";
@@ -26,8 +26,10 @@
 /* Settings sections and accessibility row help. */
 "General" = "General";
 "Appearance" = "Appearance";
+"Models" = "Models";
 "Launch and login behavior." = "Launch and login behavior.";
 "Desktop display preferences." = "Desktop display preferences.";
+"Choose where Photo Search runs vision and language models." = "Choose where Photo Search runs vision and language models.";
 "The selected mode is applied on top of the palette." = "The selected mode is applied on top of the palette.";
 "Limit hover effects and panel animations." = "Limit hover effects and panel animations.";
 "Show solid surfaces instead of see-through glass." = "Show solid surfaces instead of see-through glass.";

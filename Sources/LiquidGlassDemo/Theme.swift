@@ -52,6 +52,8 @@ final class ThemeStore {
     var textSecondary: Color { p.textSecondary }
     var accent: Color { p.accent }
     var gridLine: Color { p.gridLine }
+    var success: Color { Color(nsColor: .systemGreen) }
+    var danger: Color { Color(nsColor: .systemRed) }
 
     /// Subtle theme-aware fill for hovered icon buttons (adapts light/dark instead
     /// of a hardcoded white that vanishes in light mode).

@@ -1,7 +1,7 @@
 /* Spanish translations for the L10n scaffold. */
 "Settings" = "Ajustes";
 "Launch at Login" = "Abrir al iniciar sesión";
-"Open LiquidGlassDemo automatically when you log in." = "Abrir LiquidGlassDemo automáticamente al iniciar sesión.";
+"Open Photo Search automatically when you log in." = "Abrir Photo Search automáticamente al iniciar sesión.";
 "Only available in the installed app." = "Disponible solo en la app instalada.";
 "Theme" = "Tema";
 "Search themes…" = "Buscar temas…";
@@ -25,8 +25,10 @@
 /* Settings sections and accessibility row help. */
 "General" = "General";
 "Appearance" = "Apariencia";
+"Models" = "Modelos";
 "Launch and login behavior." = "Comportamiento de arranque e inicio de sesión.";
 "Desktop display preferences." = "Preferencias de visualización del escritorio.";
+"Choose where Photo Search runs vision and language models." = "Elige dónde ejecuta Photo Search los modelos visuales y de lenguaje.";
 "The selected mode is applied on top of the palette." = "El modo seleccionado se aplica sobre la paleta.";
 "Limit hover effects and panel animations." = "Limita los efectos al pasar el cursor y las animaciones de los paneles.";
 "Show solid surfaces instead of see-through glass." = "Muestra superficies sólidas en lugar de cristal translúcido.";

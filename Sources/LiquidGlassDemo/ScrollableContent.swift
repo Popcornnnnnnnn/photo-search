@@ -45,9 +45,9 @@ struct ScrollableContent<Content: View>: View {
                 let thumbCenterY = (trackH - thumbH) * progress + thumbH / 2
 
                 Capsule()
-                    .fill(theme.textSecondary.opacity(hovering || dragging ? 0.55 : 0.30))
-                    .frame(width: 6, height: thumbH)
-                    .position(x: geo.size.width - 7, y: thumbCenterY)
+                    .fill(theme.textSecondary.opacity(hovering || dragging ? 0.46 : 0.18))
+                    .frame(width: hovering || dragging ? 5 : 3, height: thumbH)
+                    .position(x: geo.size.width - 6, y: thumbCenterY)
                     .contentShape(Rectangle())
                     .onHover { hovering = $0 }
                     .gesture(
@@ -59,7 +59,9 @@ struct ScrollableContent<Content: View>: View {
                             }
                             .onEnded { _ in dragging = false }
                     )
+                    .shadow(color: theme.background.opacity(0.35), radius: 2)
                     .animation(.easeOut(duration: 0.15), value: hovering)
+                    .animation(.easeOut(duration: 0.15), value: dragging)
             }
         }
         .frame(width: 14)

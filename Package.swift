@@ -11,12 +11,16 @@ let package = Package(
     dependencies: [
         // Sparkle powers direct-download auto-updates (see RELEASE.md). It's only
         // active in a signed .app bundle with an SUFeedURL; `swift run` ignores it.
-        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0")
     ],
     targets: [
         .executableTarget(
             name: "LiquidGlassDemo",
-            dependencies: [.product(name: "Sparkle", package: "Sparkle")],
+            dependencies: [
+                .product(name: "Sparkle", package: "Sparkle"),
+                .product(name: "GRDB", package: "GRDB.swift")
+            ],
             // String catalog for L10n (compiled into the resource bundle).
             resources: [.process("Resources")]
         ),

@@ -13,9 +13,21 @@ import AppKit
 /// filled, stroked, and masked per layer.
 struct AppIconView: View {
     var body: some View {
-        ZStack {
-            basePlate
-            glassOrb
+        Group {
+            if let image = AppIcon.asset {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .scaleEffect(0.86)
+            } else {
+                ZStack {
+                    basePlate
+                    glassOrb
+                }
+                // Keep the fallback artwork in the standard optical safe area.
+                .scaleEffect(0.82)
+            }
         }
         .frame(width: 1024, height: 1024)
     }
@@ -170,6 +182,14 @@ struct DropShape: Shape {
 
 @MainActor
 enum AppIcon {
+    static let asset: NSImage? = {
+        guard let url = Bundle.module.url(
+            forResource: "PhotoSearchIcon-v2",
+            withExtension: "png"
+        ) else { return nil }
+        return NSImage(contentsOf: url)
+    }()
+
     /// Renders the icon to an `NSImage` for use as `NSApp.applicationIconImage`.
     static func make() -> NSImage? {
         let renderer = ImageRenderer(content: AppIconView())

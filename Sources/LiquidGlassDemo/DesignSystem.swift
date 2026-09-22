@@ -15,14 +15,14 @@ enum Radius {
 enum Layout {
     static let headerHeight: CGFloat = 32
     static let leftSidebarWidth: CGFloat = 240   // default; user-resizable at runtime
-    static let rightSidebarWidth: CGFloat = 280  // default; user-resizable at runtime
+    static let rightSidebarWidth: CGFloat = 328  // default; user-resizable at runtime
     static let mainInset: CGFloat = 20
     static let hairline: CGFloat = 1
 
     // User-resizable sidebar bounds and the drag handle straddling each column divider.
     static let sidebarMinWidth: CGFloat = 180
     static let sidebarMaxWidth: CGFloat = 420
-    static let resizeHandleWidth: CGFloat = 10   // invisible hit area centered on the divider
+    static let resizeHandleWidth: CGFloat = 26   // full-height fold gutter and resize hit area
 
     // Titlebar accessory hosting (see HeaderAccessory / ContentView.configure).
     static let accessoryHeight: CGFloat = 28
@@ -73,6 +73,7 @@ enum Prefs {
     static let reduceMotion = "lg.reduceMotion"
     static let reduceTransparency = "lg.reduceTransparency"
     static let increaseContrast = "lg.increaseContrast"
+    static let searchHistory = "photoSearch.searchHistory"
 }
 
 extension EnvironmentValues {

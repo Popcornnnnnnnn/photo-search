@@ -1,0 +1,15 @@
+[project]
+name = "photo-search"
+version = "0.1.0"
+description = "Private, local-first semantic search pilot for Apple Photos"
+requires-python = ">=3.11"
+
+[project.scripts]
+photo-search = "photo_search.cli:main"
+
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["photo_search"]

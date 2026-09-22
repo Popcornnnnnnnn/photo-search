@@ -14,7 +14,7 @@ enum L10n {
     static let settings = String(localized: "Settings", bundle: bundle)
     static let launchAtLogin = String(localized: "Launch at Login", bundle: bundle)
     static let launchAtLoginHelp = String(
-        localized: "Open LiquidGlassDemo automatically when you log in.", bundle: bundle)
+        localized: "Open Photo Search automatically when you log in.", bundle: bundle)
     static let launchAtLoginUnavailable = String(
         localized: "Only available in the installed app.", bundle: bundle)
     static let theme = String(localized: "Theme", bundle: bundle)
@@ -47,10 +47,13 @@ enum L10n {
     // Settings sections (SettingsSection) and their row help text.
     static let general = String(localized: "General", bundle: bundle)
     static let appearance = String(localized: "Appearance", bundle: bundle)
+    static let models = String(localized: "Models", bundle: bundle)
     static let generalHelp = String(
         localized: "Launch and login behavior.", bundle: bundle)
     static let appearanceHelp = String(
         localized: "Desktop display preferences.", bundle: bundle)
+    static let modelsHelp = String(
+        localized: "Choose where Photo Search runs vision and language models.", bundle: bundle)
     static let themePickerHelp = String(
         localized: "The selected mode is applied on top of the palette.", bundle: bundle)
     static let reduceMotionHelp = String(
