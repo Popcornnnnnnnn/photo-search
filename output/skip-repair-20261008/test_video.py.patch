@@ -1,0 +1,95 @@
+--- backend/tests/test_video.py.before
++++ backend/tests/test_video.py
+@@ -1,4 +1,5 @@
+ import json
++import sys
+ import tempfile
+ import unittest
+ from pathlib import Path
+@@ -11,7 +12,7 @@
+ from photo_search.native import NativeHelperError, export_library_photos
+ from photo_search.search import search
+ from photo_search.sources import import_photos_manifest
+-from photo_search.video import frame_times, index_video, transcribe_video
++from photo_search.video import extract_frame, frame_times, index_video, probe_video, run_local, transcribe_video
+ 
+ 
+ class VideoTests(unittest.TestCase):
+@@ -88,6 +89,68 @@
+         self.assertEqual(result["status"], "no_audio")
+         self.assertEqual(result["text"], "")
+ 
++    def test_probe_uses_video_duration_when_audio_outlasts_picture(self):
++        info = {"format": {"duration": "15.03"}, "streams": [
++            {"codec_type": "video", "duration": "15.0"}, {"codec_type": "audio"}]}
++        with patch("photo_search.video.run_local", return_value=json.dumps(info)):
++            self.assertEqual(probe_video(self.video), {"duration": 15, "has_audio": True})
++
++    def test_frame_times_are_ordered_and_do_not_sample_past_video_tail(self):
++        for duration in (0.03, 5.077, 15.023, 65):
++            times = frame_times(duration)
++            self.assertEqual(times, sorted(set(times)))
++            self.assertLessEqual(times[-1], max(0, duration - 0.1))
++
++    def test_end_seek_retries_earlier_and_never_reuses_a_stale_frame(self):
++        frame = self.root / "frame.jpg"
++        frame.write_bytes(b"stale frame")
++        def extract(arguments):
++            self.assertFalse(frame.exists())
++            if float(arguments[arguments.index("-ss") + 1]) == 12.41:
++                frame.write_bytes(b"decoded frame")
++        with patch("photo_search.video.run_local", side_effect=extract) as run:
++            self.assertEqual(extract_frame(self.video, 12.66, frame), 12.41)
++        self.assertEqual(run.call_count, 2)
++        self.assertEqual(frame.read_bytes(), b"decoded frame")
++
++    def test_unreadable_video_still_fails_instead_of_counting_as_indexed(self):
++        with patch("photo_search.video.run_local"):
++            with self.assertRaisesRegex(ValueError, "Unable to decode video frame"):
++                extract_frame(self.video, 12.66, self.root / "missing.jpg")
++
++    def test_malformed_console_utf8_does_not_hide_success_or_process_failure(self):
++        command = [sys.executable, "-c", "import os; os.write(1, b'valid \\xe0\\xbc'); os.write(2, b'error \\xe0\\xbc')"]
++        self.assertEqual(run_local(command), "valid \ufffd")
++        with self.assertRaisesRegex(RuntimeError, "error"):
++            run_local([*command[:-1], command[-1] + "; raise SystemExit(1)"])
++
++    def test_speech_retains_readable_text_when_whisper_json_contains_bad_utf8(self):
++        model = self.root / "model.bin"
++        model.touch()
++        def whisper(arguments, **kwargs):
++            if "-oj" in arguments:
++                data = {"result": {"language": "zh"}, "transcription": [
++                    {"text": "蓝色灯塔 BAD", "offsets": {"from": 0, "to": 1000}}]}
++                raw = json.dumps(data, ensure_ascii=False).encode("utf-8").replace(b"BAD", b"\xe0\xbc")
++                (self.root / "speech.json").write_bytes(raw)
++            return ""
++        with patch.dict("os.environ", {"PHOTO_SEARCH_WHISPER_MODEL_PATH": str(model)}), \
++             patch("photo_search.video.run_local", side_effect=whisper), \
++             patch("photo_search.video.simplify_chinese", side_effect=lambda text: text):
++            result = transcribe_video(self.video, {"duration": 2, "has_audio": True}, self.root)
++        self.assertEqual(result["text"], "蓝色灯塔 \ufffd")
++        self.assertIn("decode_warning", result)
++        self.assertEqual(result["segments"][0]["end"], 1)
++
++    def test_malformed_json_is_not_treated_as_an_empty_successful_transcript(self):
++        model = self.root / "model.bin"
++        model.touch()
++        (self.root / "speech.json").write_bytes(b'{"transcription":')
++        with patch.dict("os.environ", {"PHOTO_SEARCH_WHISPER_MODEL_PATH": str(model)}), \
++             patch("photo_search.video.run_local"):
++            with self.assertRaises(json.JSONDecodeError):
++                transcribe_video(self.video, {"duration": 2, "has_audio": True}, self.root)
++
+     def test_whole_video_resume_keeps_speech_and_details_missing_from_summary(self):
+         self.assertEqual(frame_times(65)[0], 0)
+         self.assertAlmostEqual(frame_times(65)[-1], 64.9)
+@@ -100,7 +163,7 @@
+         asset = self.db.get_asset("v")
+         with patch("photo_search.video.probe_video", return_value={"duration": 65, "has_audio": True}), \
+              patch("photo_search.video.transcribe_video", return_value=speech) as asr, \
+-             patch("photo_search.video.extract_frame"), \
++             patch("photo_search.video.extract_frame", side_effect=lambda path, timestamp, destination: timestamp), \
+              patch("photo_search.video.run_ocr", return_value={"text": "滨海公路"}):
+             with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                 index_video(self.db, asset, client, provider, lambda _: None)

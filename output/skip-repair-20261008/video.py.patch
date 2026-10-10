@@ -1,0 +1,98 @@
+--- backend/photo_search/video.py.before
++++ backend/photo_search/video.py
+@@ -34,7 +34,9 @@
+ 
+ 
+ def run_local(arguments: list[str], *, timeout: float = 300) -> str:
+-    result = subprocess.run(arguments, capture_output=True, text=True, timeout=timeout)
++    # whisper.cpp can emit an incomplete UTF-8 token even after a successful run.
++    result = subprocess.run(arguments, capture_output=True, text=True,
++                            encoding="utf-8", errors="replace", timeout=timeout)
+     if result.returncode:
+         raise RuntimeError(result.stderr[-2000:] or "Local video processing failed")
+     return result.stdout
+@@ -46,26 +48,35 @@
+     video = next((s for s in data.get("streams", []) if s.get("codec_type") == "video"), None)
+     if video is None:
+         raise ValueError("No readable video track")
+-    duration = float(data.get("format", {}).get("duration") or video.get("duration") or 0)
++    # Audio can outlast the video track; never sample using that extra tail.
++    duration = float(video.get("duration") or data.get("format", {}).get("duration") or 0)
+     if not math.isfinite(duration) or duration <= 0:
+         raise ValueError("Video duration is unavailable")
+     return {"duration": duration, "has_audio": any(s.get("codec_type") == "audio" for s in data["streams"])}
+ 
+ 
+ def frame_times(duration: float) -> list[float]:
+-    times = [i * FRAME_INTERVAL for i in range(max(1, math.ceil(duration / FRAME_INTERVAL)))]
+     end = max(0.0, duration - 0.1)
++    times = [i * FRAME_INTERVAL for i in range(max(1, math.ceil(duration / FRAME_INTERVAL)))
++             if i * FRAME_INTERVAL <= end]
+     if end > times[-1] + 0.1:
+         times.append(end)
+     return times
+ 
+ 
+-def extract_frame(path: Path, timestamp: float, destination: Path) -> None:
+-    run_local([local_tool("ffmpeg"), "-nostdin", "-v", "error", "-y", "-ss", str(timestamp),
+-               "-i", str(path), "-frames:v", "1", "-vf", "scale=1280:1280:force_original_aspect_ratio=decrease",
+-               "-q:v", "3", str(destination)])
+-    if not destination.is_file():
+-        raise ValueError(f"Unable to decode video frame at {timestamp:.2f}s")
++def extract_frame(path: Path, timestamp: float, destination: Path) -> float:
++    # A track's declared end can still fall after its last decodable frame.
++    # Retry slightly earlier only when ffmpeg succeeds without producing a frame.
++    candidates = dict.fromkeys(max(0.0, timestamp - offset) for offset in (0, 0.25, 0.5))
++    for candidate in candidates:
++        destination.unlink(missing_ok=True)
++        run_local([local_tool("ffmpeg"), "-nostdin", "-v", "error", "-y", "-ss", str(candidate),
++                   "-i", str(path), "-frames:v", "1", "-vf",
++                   "scale=1280:1280:force_original_aspect_ratio=decrease:out_range=full,format=yuvj420p",
++                   "-q:v", "3", str(destination)])
++        if destination.is_file() and destination.stat().st_size:
++            return candidate
++    raise ValueError(f"Unable to decode video frame at {timestamp:.2f}s")
+ 
+ 
+ def transcribe_video(path: Path, info: dict[str, Any], directory: Path) -> dict[str, Any]:
+@@ -82,7 +93,15 @@
+               timeout=max(300, info["duration"] * 2))
+     run_local([local_tool("whisper-cli"), "-m", str(model), "-f", str(audio), "-l", "auto",
+                "-oj", "-of", str(output), "-np"], timeout=max(300, info["duration"] * 10))
+-    data = json.loads(output.with_suffix(".json").read_text(encoding="utf-8"))
++    raw = output.with_suffix(".json").read_bytes()
++    try:
++        decoded = raw.decode("utf-8")
++        decode_warning = False
++    except UnicodeDecodeError:
++        # Retain readable speech; JSON syntax must still validate normally.
++        decoded = raw.decode("utf-8", errors="replace")
++        decode_warning = True
++    data = json.loads(decoded)
+     segments = []
+     for item in data.get("transcription", []):
+         text = item.get("text", "").strip()
+@@ -94,6 +113,8 @@
+     normalized = json.loads(simplify_chinese(json.dumps({"text": original, "segments": segments}, ensure_ascii=False)))
+     return {**normalized, "original_text": original,
+             "language": data.get("result", {}).get("language"),
++            **({"decode_warning": "Whisper emitted malformed UTF-8; unreadable characters were replaced."}
++               if decode_warning else {}),
+             "status": "transcribed" if segments else "no_speech"}
+ 
+ 
+@@ -130,11 +151,11 @@
+             frame_texts = []
+             for index, timestamp in enumerate(batch):
+                 frame = directory / f"frame-{index}.jpg"
+-                extract_frame(path, timestamp, frame)
+-                frames.append((timestamp, frame))
++                decoded_at = extract_frame(path, timestamp, frame)
++                frames.append((decoded_at, frame))
+                 text = run_ocr(frame).get("text", "")
+                 if text:
+-                    frame_texts.append(f"{timestamp:.2f}s: {text}")
++                    frame_texts.append(f"{decoded_at:.2f}s: {text}")
+             spoken = "\n".join(s["text"] for s in transcript["segments"] if s["start"] < end and s["end"] > start)
+             progress(f"  Video visuals: {end:.0f}/{info['duration']:.0f}s")
+             annotation, _ = client.annotate_video_frames(frames, spoken, "\n".join(frame_texts),
