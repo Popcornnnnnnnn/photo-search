@@ -4,6 +4,8 @@ import SwiftUI
 /// hidden and replaced by a slim rounded thumb that reflects scroll position,
 /// brightens on hover/drag, is draggable, and only appears when content overflows.
 struct ScrollableContent<Content: View>: View {
+    var scrollToID: String? = nil
+    var scrollToken: Int = 0
     @ViewBuilder var content: () -> Content
 
     @Environment(ThemeStore.self) private var theme
@@ -20,6 +22,9 @@ struct ScrollableContent<Content: View>: View {
         }
         .scrollIndicators(.never)
         .scrollPosition($scrollPos)
+        .onChange(of: scrollToken) { _, _ in
+            if let scrollToID { scrollPos.scrollTo(id: scrollToID, anchor: .center) }
+        }
         .onScrollGeometryChange(for: Metrics.self) { geo in
             Metrics(offset: geo.contentOffset.y,
                     content: geo.contentSize.height,

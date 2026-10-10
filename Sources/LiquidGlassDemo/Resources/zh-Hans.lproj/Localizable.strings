@@ -1,0 +1,46 @@
+
+// Video search
+"Videos" = "视频";
+"Video" = "视频";
+"Duration" = "时长";
+"Video unavailable" = "视频暂不可用";
+"%@ videos" = "%@ 个视频";
+"Allow Photos Access" = "允许访问照片库";
+"Photos Access" = "照片库权限";
+"Allow Photo Search to read photos and videos from Apple Photos." = "允许 Photo Search 读取 Apple Photos 中的照片和视频。";
+"Items indexed" = "已索引项目";
+"%@ video" = "%@ 个视频";
+
+"Any date" = "不限日期";
+"Last 30 days" = "最近 30 天";
+"This year" = "今年";
+"Last year" = "去年";
+"Date range" = "时间范围";
+"Text + semantic match" = "文字与语义匹配";
+"Text match" = "文字匹配";
+"Visual match" = "画面相似";
+"Video description match" = "视频描述匹配";
+"Load more" = "加载更多";
+"Preview unavailable" = "预览不可用";
+"Visual search timed out. Try searching again." = "视觉搜索超时，请重新搜索。";
+"Waiting for the next batch" = "等待下一批";
+"No current indexing status" = "暂无索引状态";
+"Finished with skipped items" = "已处理完成，部分项目跳过";
+"Status out of date" = "状态已过期";
+"Text index" = "文字索引";
+"Visual index" = "视觉索引";
+"Videos indexed" = "已索引视频";
+
+"Last reported: %@" = "上次报告：%@";
+"Visual coverage is unknown" = "视觉索引覆盖率未知";
+"Waiting for visual indexing" = "等待视觉索引";
+"Some items could not be indexed" = "部分项目未能建立索引";
+
+"From" = "开始日期";
+"To" = "结束日期";
+"Apply" = "应用";
+"Cancel" = "取消";
+"Show sidebar" = "展开侧边栏";
+"Hide sidebar" = "折叠侧边栏";
+"Show info" = "展开详细信息";
+"Hide info" = "折叠详细信息";

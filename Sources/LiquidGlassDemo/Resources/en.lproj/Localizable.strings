@@ -34,3 +34,49 @@
 "Limit hover effects and panel animations." = "Limit hover effects and panel animations.";
 "Show solid surfaces instead of see-through glass." = "Show solid surfaces instead of see-through glass.";
 "Draw borders and separators in stronger colors." = "Draw borders and separators in stronger colors.";
+
+// Video search
+"Videos" = "Videos";
+"Video" = "Video";
+"Duration" = "Duration";
+"Video unavailable" = "Video unavailable";
+"%@ videos" = "%@ videos";
+"Allow Photos Access" = "Allow Photos Access";
+"Photos Access" = "Photos Access";
+"Allow Photo Search to read photos and videos from Apple Photos." = "Allow Photo Search to read photos and videos from Apple Photos.";
+"Items indexed" = "Items indexed";
+"%@ video" = "%@ video";
+
+"Any date" = "Any date";
+"Last 30 days" = "Last 30 days";
+"This year" = "This year";
+"Last year" = "Last year";
+"Date range" = "Date range";
+"Text + semantic match" = "Text + semantic match";
+"Text match" = "Text match";
+"Visual match" = "Visual match";
+"Video description match" = "Video description match";
+"Load more" = "Load more";
+"Preview unavailable" = "Preview unavailable";
+"Visual search timed out. Try searching again." = "Visual search timed out. Try searching again.";
+"Waiting for the next batch" = "Waiting for the next batch";
+"No current indexing status" = "No current indexing status";
+"Finished with skipped items" = "Finished with skipped items";
+"Status out of date" = "Status out of date";
+"Text index" = "Text index";
+"Visual index" = "Visual index";
+"Videos indexed" = "Videos indexed";
+
+"Last reported: %@" = "Last reported: %@";
+"Visual coverage is unknown" = "Visual coverage is unknown";
+"Waiting for visual indexing" = "Waiting for visual indexing";
+"Some items could not be indexed" = "Some items could not be indexed";
+
+"From" = "From";
+"To" = "To";
+"Apply" = "Apply";
+"Cancel" = "Cancel";
+"Show sidebar" = "Show sidebar";
+"Hide sidebar" = "Hide sidebar";
+"Show info" = "Show info";
+"Hide info" = "Hide info";

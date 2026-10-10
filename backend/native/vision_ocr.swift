@@ -29,6 +29,16 @@ guard CommandLine.arguments.count == 2 else {
     fail("usage: vision-ocr IMAGE")
 }
 
+if CommandLine.arguments[1] == "--simplify-text" {
+    let input = FileHandle.standardInput.readDataToEndOfFile()
+    guard let text = String(data: input, encoding: .utf8),
+          let simplified = text.applyingTransform(StringTransform("Traditional-Simplified"), reverse: false) else {
+        fail("unable to normalize Chinese text")
+    }
+    FileHandle.standardOutput.write(Data(simplified.utf8))
+    Foundation.exit(0)
+}
+
 let path = CommandLine.arguments[1]
 let url = URL(fileURLWithPath: path)
 guard

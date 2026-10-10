@@ -4,7 +4,10 @@ import SwiftUI
 /// localized title/subtitle) to add a settings page.
 enum SettingsSection: String, CaseIterable, Identifiable {
     case general = "General"
+    case history = "Search History"
     case models = "Models"
+    case indexing = "Indexing"
+    case visualSearch = "Visual Search"
     case appearance = "Appearance"
     case accessibility = "Accessibility"
 
@@ -13,7 +16,10 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .general: "gearshape"
+        case .history: "clock.arrow.circlepath"
         case .models: "cpu"
+        case .indexing: "photo.stack"
+        case .visualSearch: "eye"
         case .appearance: "paintpalette"
         case .accessibility: "accessibility"
         }
@@ -22,7 +28,10 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .general: L10n.general
+        case .history: "Search History"
         case .models: L10n.models
+        case .indexing: "Indexing"
+        case .visualSearch: "Visual Search"
         case .appearance: L10n.appearance
         case .accessibility: L10n.accessibility
         }
@@ -31,7 +40,10 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .general: L10n.generalHelp
+        case .history: "Review and repeat your previous searches."
         case .models: L10n.modelsHelp
+        case .indexing: "How far along the background index is, and how fast it is moving."
+        case .visualSearch: "The local encoder that finds photos by appearance. It stays in memory until you offload it."
         case .appearance: L10n.appearanceHelp
         case .accessibility: L10n.accessibilityHelp
         }
@@ -44,6 +56,10 @@ struct SettingsModal: View {
     @Bindable var model: TransparencyModel
     @Bindable var ui: UIState
     @Bindable var a11y: AccessibilitySettings
+    let history: SearchHistoryStore
+    let encoder: PhotoEncoderStore
+    let indexActivity: PhotoIndexActivityStore
+    let onSearch: (SearchHistoryEntry) -> Void
 
     @Environment(ThemeStore.self) private var theme
     @Environment(ErrorStore.self) private var errors
@@ -132,7 +148,7 @@ struct SettingsModal: View {
             }
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(HoverButtonStyle(horizontalPadding: 0, verticalPadding: 0, cornerRadius: Radius.row))
         .focusEffectDisabled()
         .pointerStyle(.link)
         .onHover { hovering in hoveredSection = hovering ? item : nil }
@@ -158,20 +174,45 @@ struct SettingsModal: View {
     // MARK: Content
 
     private var content: some View {
+        Group {
+            if ui.settingsSection == .history {
+                VStack(alignment: .leading, spacing: 0) {
+                    sectionHeading
+                    SearchHistorySettingsView(history: history, onSearch: onSearch)
+                }
+                .padding(.top, 22)
+                .padding(.leading, 28)
+                .padding(.trailing, 42)
+                .padding(.bottom, 20)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            } else {
+                scrollingSettingsContent
+            }
+        }
+    }
+
+    private var sectionHeading: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(ui.settingsSection.title).font(Typography.title).foregroundStyle(theme.textPrimary)
+            Text(ui.settingsSection.subtitle)
+                .font(Typography.caption)
+                .foregroundStyle(theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.bottom, 16)
+    }
+
+    private var scrollingSettingsContent: some View {
         ScrollableContent {
             VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(ui.settingsSection.title).font(Typography.title).foregroundStyle(theme.textPrimary)
-                    Text(ui.settingsSection.subtitle)
-                        .font(Typography.caption)
-                        .foregroundStyle(theme.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.bottom, 16)
+                sectionHeading
 
                 switch ui.settingsSection {
                 case .general: generalSection
+                case .history: EmptyView()
                 case .models: modelsSection
+                case .indexing: indexingSection
+                case .visualSearch: visualSearchSection
                 case .appearance: appearanceSection
                 case .accessibility: accessibilitySection
                 }
@@ -200,6 +241,205 @@ struct SettingsModal: View {
             .tint(theme.accent)
             .disabled(!launchAtLogin.available)
         }
+    }
+
+    /// Background indexing progress, with user-initiated Photos authorization when needed.
+    private var indexingSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let snapshot = indexActivity.snapshot {
+                let payload = snapshot.payload
+
+                if payload.needsPhotosAccess {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(String(localized: "Allow Photo Search to read photos and videos from Apple Photos.", bundle: .module))
+                            .font(Typography.footnote)
+                        Button(String(localized: "Allow Photos Access", bundle: .module)) {
+                            Task {
+                                do { try await indexActivity.requestPhotosAccess() }
+                                catch { errors.present(title: String(localized: "Photos Access", bundle: .module),
+                                                       message: error.localizedDescription) }
+                            }
+                        }
+                        .buttonStyle(HoverButtonStyle())
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 12) {
+                        Image(systemName: snapshot.activity.statusIcon)
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundStyle(statusTint(for: snapshot.activity))
+                            .frame(width: 36, height: 36)
+                            .background(theme.selectionFill, in: RoundedRectangle(cornerRadius: Radius.field))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(snapshot.activity.headline)
+                                .font(Typography.label)
+                                .foregroundStyle(theme.textPrimary)
+                            Text(snapshot.statusDetail)
+                                .font(Typography.footnote)
+                                .foregroundStyle(theme.textSecondary)
+                        }
+                        Spacer()
+                    }
+
+                    if let indexed = payload.annotated, let total = payload.libraryImages {
+                        ProgressView(value: Double(indexed), total: Double(max(1, total)))
+                            .progressViewStyle(.linear)
+                            .tint(theme.accent)
+                    }
+
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 16) {
+                            indexMetric(coverage(payload.annotated, total: payload.libraryImages),
+                                        caption: String(localized: "Text index", bundle: .module))
+                            indexMetric(coverage(payload.embedded, total: payload.libraryImages),
+                                        caption: String(localized: "Visual index", bundle: .module))
+                            indexMetric(coverage(payload.videosAnnotated, total: payload.libraryVideos),
+                                        caption: String(localized: "Videos indexed", bundle: .module))
+                        }
+                        VStack(alignment: .leading, spacing: 12) {
+                            indexDetailRow(String(localized: "Text index", bundle: .module), coverage(payload.annotated, total: payload.libraryImages), monospaced: false)
+                            indexDetailRow(String(localized: "Visual index", bundle: .module), coverage(payload.embedded, total: payload.libraryImages), monospaced: false)
+                            indexDetailRow(String(localized: "Videos indexed", bundle: .module), coverage(payload.videosAnnotated, total: payload.libraryVideos), monospaced: false)
+                        }
+                    }
+                    HStack(spacing: 0) {
+                        indexMetric(snapshot.activity == .indexing ? (payload.ratePerHour.map { "\(Int($0.rounded()).formatted())/hour" } ?? "—") : "—",
+                                    caption: "Indexing speed")
+                        indexMetric(payload.pending.map { $0.formatted() } ?? "—",
+                                    caption: "Still to process")
+                    }
+                }
+                .padding(14)
+                .background(theme.background.opacity(0.55), in: RoundedRectangle(cornerRadius: Radius.content))
+                .themedBorder(Radius.content)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    indexDetailRow("Currently", snapshot.activity == .indexing ? (payload.message ?? snapshot.statusDetail) : snapshot.statusDetail,
+                                   monospaced: false)
+                    indexDetailRow("Estimated finish", snapshot.activity == .indexing ? (payload.etaText ?? "—") : "—", monospaced: false)
+                    if let error = payload.lastError ?? payload.embeddingError {
+                        Text(verbatim: error)
+                            .font(Typography.footnote)
+                            .foregroundStyle(.orange)
+                            .textSelection(.enabled)
+                    }
+                    indexDetailRow("Last update", snapshot.updated.formatted(date: .omitted, time: .shortened),
+                                   monospaced: false)
+                }
+                .padding(14)
+                .background(theme.background.opacity(0.55), in: RoundedRectangle(cornerRadius: Radius.content))
+                .themedBorder(Radius.content)
+            } else {
+                Text("No indexing has run yet. Once the background worker starts, its progress appears here.")
+                    .font(Typography.footnote)
+                    .foregroundStyle(theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .task { await indexActivity.refresh() }
+    }
+
+    private func coverage(_ count: Int?, total: Int?) -> String {
+        guard let count, let total else { return "—" }
+        return "\(count.formatted()) / \(total.formatted())"
+    }
+
+    private func indexMetric(_ value: String, caption: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(value)
+                .font(Typography.label)
+                .foregroundStyle(theme.textPrimary)
+                .monospacedDigit()
+            Text(caption)
+                .font(Typography.footnote)
+                .foregroundStyle(theme.textSecondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func statusTint(for activity: PhotoIndexActivity) -> Color {
+        switch activity {
+        case .indexing: theme.accent
+        case .paused, .completeWithErrors: .orange
+        case .complete: .green
+        case .idle, .waiting, .stale: theme.textSecondary
+        }
+    }
+
+    private func indexDetailRow(_ label: String, _ value: String, monospaced: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(label)
+                .font(Typography.footnote)
+                .foregroundStyle(theme.textSecondary)
+                .frame(width: 108, alignment: .leading)
+            Text(value)
+                .font(monospaced ? Typography.footnote.monospaced() : Typography.footnote)
+                .foregroundStyle(theme.textPrimary)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var visualSearchSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: "eye")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(theme.accent)
+                    .frame(width: 36, height: 36)
+                    .background(theme.selectionFill, in: RoundedRectangle(cornerRadius: Radius.field))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Local encoder")
+                        .font(Typography.footnote)
+                        .foregroundStyle(theme.textSecondary)
+                    Text(encoder.residentDescription)
+                        .font(Typography.label)
+                        .foregroundStyle(theme.textPrimary)
+                    Text("Qwen3-VL-Embedding-2B · 2048 dimensions")
+                        .font(Typography.footnote)
+                        .foregroundStyle(theme.textSecondary)
+                }
+                Spacer()
+                Button {
+                    Task { await encoder.offload() }
+                } label: {
+                    Text("Offload")
+                        .font(Typography.control)
+                        .foregroundStyle(encoder.isReady ? theme.accent : theme.textSecondary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(theme.selectionFill, in: Capsule())
+                }
+                .buttonStyle(HoverButtonStyle(horizontalPadding: 0, verticalPadding: 0, cornerRadius: 100))
+                .disabled(!encoder.isReady)
+                .help("Release the encoder's memory now")
+                .accessibilityLabel("Offload visual search encoder")
+            }
+            .padding(14)
+            .background(theme.background.opacity(0.55), in: RoundedRectangle(cornerRadius: Radius.content))
+            .themedBorder(Radius.content)
+
+            EncoderLoadNotice(store: encoder)
+
+            if let failure = encoder.lastFailure {
+                Text(failure)
+                    .font(Typography.footnote)
+                    .foregroundStyle(theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            toggleRow(
+                "Offload when memory is tight",
+                "Release the model automatically when macOS reports memory pressure. The next search loads it again.",
+                isOn: Binding(
+                    get: { encoder.offloadsWhenMemoryIsTight },
+                    set: { encoder.offloadsWhenMemoryIsTight = $0 }
+                )
+            )
+        }
+        .task { await encoder.refresh() }
     }
 
     private var appearanceSection: some View {
@@ -271,6 +511,11 @@ struct SettingsModal: View {
             }
 
             HStack {
+                if !providers.configuration.providers.contains(where: { $0.id == ModelProviderProfile.localQwen27B.id }) {
+                    Button("Add Local Qwen 27B") {
+                        providers.beginAddingProvider(.localQwen27B)
+                    }
+                }
                 Button {
                     providers.beginAddingProvider()
                 } label: {
@@ -352,6 +597,12 @@ struct SettingsModal: View {
             }
             editorField("API Base URL", placeholder: "https://example.com/v1", keyPath: \.baseURL)
             editorField("Model", placeholder: "vision-model", keyPath: \.model)
+
+            if providers.draftProvider?.id == ModelProviderProfile.localQwen27B.id {
+                Text("Load Qwen 27B in LM Studio and start its local server on port 1234. This provider runs on this Mac without Tailscale or an SSH bridge.")
+                    .font(Typography.footnote)
+                    .foregroundStyle(theme.textSecondary)
+            }
 
             VStack(alignment: .leading, spacing: 5) {
                 Text("API Key").font(Typography.label).foregroundStyle(theme.textPrimary)
@@ -568,7 +819,9 @@ struct SliderControl: View {
 }
 
 #Preview {
-    SettingsModal(model: TransparencyModel(), ui: UIState(), a11y: AccessibilitySettings())
+    SettingsModal(model: TransparencyModel(), ui: UIState(), a11y: AccessibilitySettings(),
+                  history: SearchHistoryStore(defaults: UserDefaults(suiteName: "PhotoSearchHistoryPreview")!),
+                  encoder: PhotoEncoderStore(), indexActivity: PhotoIndexActivityStore()) { _ in }
         .frame(width: 1000, height: 760)
         .environment(ThemeStore())
         .environment(ErrorStore())

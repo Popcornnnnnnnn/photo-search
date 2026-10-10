@@ -15,8 +15,8 @@
     <key>CFBundleShortVersionString</key>
     <string>0.1.0</string>
     <key>NSPhotoLibraryUsageDescription</key>
-    <string>Photo Search reads a small sample of your photo library to build a private local search index.</string>
+    <string>Photo Search reads photos and videos from your photo library to build a private local search index.</string>
     <key>LSUIElement</key>
-    <false/>
+    <true/>
 </dict>
 </plist>

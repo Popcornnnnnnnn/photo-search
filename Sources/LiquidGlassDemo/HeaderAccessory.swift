@@ -60,6 +60,6 @@ struct TrailingAccessoryView: View {
     }
 
     private var panelVisible: Bool {
-        store.isViewerPresented ? store.viewerInfoVisible : ui.rightSidebarVisible
+        ui.rightSidebarVisible
     }
 }

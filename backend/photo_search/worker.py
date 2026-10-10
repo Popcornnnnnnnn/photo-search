@@ -3,6 +3,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -17,14 +18,17 @@ from .config import (
 from .db import Database
 from .indexer import index_assets, pending_annotation_assets
 from .native import export_library_photos
-from .qwen import QwenClient
-from .providers import load_provider
+from .qwen import ModelProviderError, QwenClient
+from .providers import ModelProvider, load_provider
 from .sources import import_photos_manifest
+from .embedding_worker import load_embedding_status, pending_embedding_count, run_embedding_batch
+from .embeddings import embedding_count
 
 
 LOCK_PATH = APP_HOME / "worker.lock"
 FULL_IMPORT_DIR = IMPORT_DIR / "photos-full"
 PHOTO_SOURCE_KINDS = {"apple-photos-full"}
+_STATUS_LOCK = threading.Lock()
 
 
 def now_iso() -> str:
@@ -48,12 +52,36 @@ def load_worker_status() -> dict[str, Any]:
 
 
 def write_worker_status(state: dict[str, Any]) -> None:
-    ensure_app_dirs()
-    payload = {**state, "updated_at": now_iso()}
-    temporary = WORKER_STATUS_PATH.with_suffix(".tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, WORKER_STATUS_PATH)
+    with _STATUS_LOCK:
+        ensure_app_dirs()
+        payload = {**state, "updated_at": now_iso()}
+        temporary = WORKER_STATUS_PATH.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, WORKER_STATUS_PATH)
+
+
+def start_heartbeat(state: dict[str, Any], interval: float = 30):
+    """Keep a long local transcription/model call distinct from a stopped worker."""
+    stopped = threading.Event()
+
+    def pulse():
+        while not stopped.wait(interval):
+            if state.get("status") == "running":
+                try:
+                    write_worker_status(state)
+                except OSError:
+                    # The main path also writes and reports a status-file failure.
+                    pass
+
+    thread = threading.Thread(target=pulse, name="photo-search-worker-heartbeat", daemon=True)
+    thread.start()
+
+    def stop():
+        stopped.set()
+        thread.join(timeout=1)
+
+    return stop
 
 
 def update_rate(state: dict[str, Any], annotated: int) -> None:
@@ -70,6 +98,32 @@ def update_rate(state: dict[str, Any], annotated: int) -> None:
     state["eta_at"] = (datetime.now(timezone.utc) + timedelta(seconds=remaining / per_second)).isoformat()
 
 
+def _confirm_model_reachable(provider: ModelProvider, attempts: int = 3) -> None:
+    """Verify the private model answers before spending a batch on it.
+
+    A single probe is unreliable here: the tunnel to the 4090 accepts the TCP
+    connection and then sometimes never answers, while the model service is
+    healthy. Retrying keeps one unlucky sample from pausing indexing for the
+    full retry interval.
+    """
+    last_error: Exception | None = None
+    for _ in range(attempts):
+        try:
+            QwenClient(provider).models()
+            return
+        except Exception as error:
+            last_error = error
+    raise last_error if last_error is not None else ModelProviderError("model unreachable")
+
+
+def sync_due(state: dict[str, Any]) -> bool:
+    try:
+        last_sync = datetime.fromisoformat(str(state["last_sync_at"]))
+        return (datetime.now(timezone.utc) - last_sync).total_seconds() >= 300
+    except (KeyError, TypeError, ValueError):
+        return True
+
+
 def run_full_library_worker() -> dict[str, Any]:
     ensure_app_dirs()
     with LOCK_PATH.open("a+") as lock:
@@ -83,29 +137,27 @@ def run_full_library_worker() -> dict[str, Any]:
         state.setdefault("started_at", now_iso())
         state.pop("last_error", None)
         state.pop("next_retry_at", None)
+        stop_heartbeat = start_heartbeat(state)
         try:
-            state.update(
-                status="running",
-                stage="syncing",
-                message="Checking Apple Photos for new images and resumable previews.",
-            )
-            write_worker_status(state)
-            result = export_library_photos(FULL_IMPORT_DIR, 1_000_000, "all")
-            state.update(
-                stage="importing",
-                message="Updating the private SQLite index from the Photos manifest.",
-                library_images=int(result.get("library_images", 0)),
-                exported=int(result.get("exported", 0)),
-                export_failed=int(result.get("failed", 0)),
-            )
-            write_worker_status(state)
-            with Database() as db:
-                imported = import_photos_manifest(
-                    db,
-                    FULL_IMPORT_DIR / "manifest.jsonl",
-                    "apple-photos-full",
-                    sampling_strategy="full-library-v1",
+            if sync_due(state):
+                state.update(status="running", stage="syncing", message="Checking Apple Photos for changed or deleted photos and videos.")
+                write_worker_status(state)
+                result = export_library_photos(FULL_IMPORT_DIR, 1_000_000, "all")
+                state.update(stage="importing", message="Updating changed Photos previews and source availability.")
+                write_worker_status(state)
+                with Database() as db:
+                    imported = import_photos_manifest(
+                        db, FULL_IMPORT_DIR / "manifest.jsonl", "apple-photos-full",
+                        sampling_strategy="full-library-v1", snapshot=result,
+                    )
+                state.update(
+                    full_import_complete=True, last_sync_at=now_iso(),
+                    library_images=int(result.get("library_assets", result.get("library_images", imported))),
+                    library_videos=int(result.get("library_videos", 0)), imported=imported,
+                    export_failed=int(result.get("failed", 0)),
+                    regenerated_previews=int(result.get("regenerated", 0)),
                 )
+            with Database() as db:
                 retry_before = (
                     datetime.now(timezone.utc) - timedelta(hours=SKIP_RETRY_HOURS)
                 ).isoformat()
@@ -117,10 +169,6 @@ def run_full_library_worker() -> dict[str, Any]:
                     source_kinds=PHOTO_SOURCE_KINDS,
                 )
             state.update(
-                full_import_complete=True,
-                last_sync_at=now_iso(),
-                library_images=int(result.get("library_images", imported)),
-                imported=imported,
                 pending=len(pending),
                 batch_size=WORKER_BATCH_SIZE,
                 auto_retried_skips=released_skips,
@@ -131,14 +179,28 @@ def run_full_library_worker() -> dict[str, Any]:
             )
             write_worker_status(state)
 
+            if pending_embedding_count():
+                state.update(status="running", stage="embedding", message="Filling photo and video vectors for the pinned local encoder.")
+                write_worker_status(state)
+                run_embedding_batch()
+
+            visual = load_embedding_status()
+            # Match the library denominator and refresh after every sync, even
+            # when deletions leave no new vectors for the encoder to process.
+            with Database() as db:
+                embedded = embedding_count(db, source_kind="apple-photos-full")
+            state.update(embeddings=visual.get("status"), embedded=embedded,
+                         embedding_pending=pending_embedding_count(), embedding_error=visual.get("error"))
+
             if not pending:
                 completed_status = "complete_with_errors" if counts["skipped"] else "complete"
+                visual_pending = state.get("embedding_pending") != 0 or bool(state.get("embedding_error"))
                 state.update(
-                    status=completed_status,
-                    stage="complete",
-                    message="Photo index is up to date. The next scheduled run will check for new Photos.",
-                    finished_at=now_iso(),
-                    embeddings="deferred_manual_gpu_swap",
+                    status="waiting" if visual_pending else completed_status,
+                    stage="embedding" if visual_pending else "complete",
+                    message=("Text indexing is up to date; visual indexing will continue in scheduled batches."
+                             if visual_pending else "Photo index is up to date. The next scheduled run will check for new Photos."),
+                    finished_at=None if visual_pending else now_iso(),
                 )
                 write_worker_status(state)
                 return state
@@ -149,7 +211,7 @@ def run_full_library_worker() -> dict[str, Any]:
                 message="Checking the private Qwen service before indexing.",
             )
             write_worker_status(state)
-            QwenClient(provider).models()
+            _confirm_model_reachable(provider)
 
             with Database() as db:
                 counts = db.pipeline_counts("apple-photos-full")
@@ -157,7 +219,7 @@ def run_full_library_worker() -> dict[str, Any]:
                 state.update(
                     status="running",
                     stage="indexing",
-                    message="Running Apple Vision OCR and Qwen structured annotations.",
+                    message="Indexing photos and videos, including local speech recognition.",
                     **counts,
                 )
                 write_worker_status(state)
@@ -185,18 +247,17 @@ def run_full_library_worker() -> dict[str, Any]:
                     source_kinds=PHOTO_SOURCE_KINDS,
                 )
 
-            complete = not pending
+            complete = not pending and state.get("embedding_pending") == 0 and not state.get("embedding_error")
             completed_status = "complete_with_errors" if counts["skipped"] else "complete"
             state.update(
                 status=completed_status if complete else "waiting",
-                stage="complete" if complete else "indexing",
+                stage="complete" if complete else "indexing" if pending else "embedding",
                 message=(
                     "Photo index is up to date. The next scheduled run will check for new Photos."
                     if complete
                     else "This batch is complete; the scheduled worker will continue with the next batch."
                 ),
                 finished_at=now_iso() if complete else None,
-                embeddings="deferred_manual_gpu_swap",
                 pending=len(pending),
                 **counts,
             )
@@ -213,3 +274,5 @@ def run_full_library_worker() -> dict[str, Any]:
             )
             write_worker_status(state)
             raise
+        finally:
+            stop_heartbeat()

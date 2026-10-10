@@ -36,7 +36,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-DIST="dist"
+DIST="${PHOTO_SEARCH_DIST_DIR:-dist}"
 APP="$DIST/$APP_NAME.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
@@ -116,6 +116,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
     <key>LSMinimumSystemVersion</key><string>$MIN_OS</string>
     <key>LSApplicationCategoryType</key><string>$CATEGORY</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSPhotoLibraryUsageDescription</key><string>Photo Search needs access to delete photos you explicitly choose in Review photos.</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
 $URL_KEYS
 $SPARKLE_KEYS

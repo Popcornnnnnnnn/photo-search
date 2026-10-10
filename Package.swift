@@ -26,7 +26,8 @@ let package = Package(
         ),
         .testTarget(
             name: "LiquidGlassDemoTests",
-            dependencies: ["LiquidGlassDemo"]
+            dependencies: ["LiquidGlassDemo"],
+            resources: [.copy("Fixtures")]
         )
     ]
 )

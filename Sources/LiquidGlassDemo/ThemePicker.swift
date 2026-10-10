@@ -123,7 +123,7 @@ struct ThemePicker: View {
                     )
                     .contentShape(RoundedRectangle(cornerRadius: Radius.control))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(HoverButtonStyle(horizontalPadding: 0, verticalPadding: 0))
                 .focusEffectDisabled()
                 .pointerStyle(.link)
             }
@@ -167,7 +167,7 @@ struct ThemePicker: View {
             .themedBorder(Radius.content, color: isSelected ? theme.accent : theme.border, width: isSelected ? 2 : 1)
             .contentShape(RoundedRectangle(cornerRadius: Radius.content))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(HoverButtonStyle(horizontalPadding: 0, verticalPadding: 0, cornerRadius: Radius.content))
         .focusEffectDisabled()
         .pointerStyle(.link)
         // One VoiceOver element per card: name + selected state, not the mockup.

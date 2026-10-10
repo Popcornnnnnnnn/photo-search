@@ -37,31 +37,68 @@ def import_photos_manifest(
     source_kind: str,
     *,
     sampling_strategy: str | None = None,
+    snapshot: dict[str, Any] | None = None,
 ) -> int:
     imported = 0
-    for line in manifest.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        record = json.loads(line)
+    records = [json.loads(line) for line in manifest.read_text(encoding="utf-8").splitlines() if line.strip()]
+    ids = {record["id"] for record in records}
+    if len(ids) != len(records):
+        raise ValueError("Photos manifest contains duplicate IDs")
+    complete = bool(snapshot and snapshot.get("full_snapshot"))
+    present = set(snapshot.get("present_ids", [])) if snapshot else set()
+    failed = set(snapshot.get("failed_ids", [])) if snapshot else set()
+    if complete and (snapshot.get("strategy") != "all" or len(present) != snapshot.get("library_assets", snapshot.get("library_images"))
+                     or ids | failed != present or ids & failed):
+        raise ValueError("Incomplete Photos inventory; refusing deletion reconciliation")
+    for record in records:
         source = Path(record["path"])
-        destination = ASSET_DIR / source.name
-        if source.resolve() != destination.resolve() and not destination.exists():
-            shutil.copy2(source, destination)
-        digest = sha256_file(destination)
+        is_video = record.get("media_type") == "video"
+        # Keep one video copy in the exporter cache; only previews go into assets/.
+        destination = source if is_video else ASSET_DIR / source.name
+        thumbnail_source = Path(record.get("thumbnail_path") or record["path"])
+        thumbnail = ASSET_DIR / thumbnail_source.name if is_video else destination
+        if is_video and thumbnail_source.resolve() != thumbnail.resolve():
+            if not thumbnail.is_file() or thumbnail.stat().st_mtime_ns != thumbnail_source.stat().st_mtime_ns:
+                temporary = thumbnail.with_suffix(".tmp")
+                shutil.copy2(thumbnail_source, temporary)
+                temporary.replace(thumbnail)
+        previous = db.get_asset(record["id"])
+        old_metadata = json.loads(previous["metadata_json"]) if previous else {}
+        stat = source.stat()
+        unchanged = bool(previous and destination.is_file() and previous["file_path"] == str(destination)
+                         and old_metadata.get("preview_mtime_ns") == stat.st_mtime_ns
+                         and old_metadata.get("preview_size") == stat.st_size)
+        if not unchanged and source.resolve() != destination.resolve():
+            temporary = destination.with_suffix(".tmp")
+            shutil.copy2(source, temporary)
+            temporary.replace(destination)
+        digest = previous["sha256"] if unchanged else sha256_file(destination)
         metadata = {
             "favorite": record.get("favorite", False),
             "media_subtypes": record.get("media_subtypes", 0),
             "preprocess_version": PREPROCESS_VERSION,
+            "source_modified_at": record.get("modified_at"),
+            "preview_mtime_ns": stat.st_mtime_ns,
+            "preview_size": stat.st_size,
         }
+        if is_video:
+            metadata.update(media_type="video", duration_seconds=record.get("duration"),
+                            preprocess_version="video-frames-5s-v1")
         if sampling_strategy:
             metadata["sampling_strategy"] = sampling_strategy
+        if unchanged and previous["is_available"] and previous["source_kind"] == source_kind and (
+            previous["metadata_json"] == json.dumps(metadata, ensure_ascii=False)
+            and all(previous[key] == record.get(key) for key in ("filename", "captured_at", "width", "height"))
+        ):
+            imported += 1
+            continue
         db.upsert_asset(
             {
                 "id": record["id"],
                 "source_kind": source_kind,
                 "source_identifier": record["local_identifier"],
                 "file_path": str(destination),
-                "thumbnail_path": str(destination),
+                "thumbnail_path": str(thumbnail),
                 "sha256": digest,
                 "filename": record["filename"],
                 "captured_at": record.get("captured_at"),
@@ -71,6 +108,9 @@ def import_photos_manifest(
             }
         )
         imported += 1
+    if complete:
+        db.reconcile_photos(present, failed_ids=failed,
+                            media_types={"image", "video"} if "library_assets" in snapshot else {"image"})
     return imported
 
 
@@ -95,6 +135,7 @@ def import_full_photos_library(db: Database) -> dict[str, Any]:
         Path(result["manifest"]),
         "apple-photos-full",
         sampling_strategy="full-library-v1",
+        snapshot=result,
     )
     return {**result, "imported": imported}
 

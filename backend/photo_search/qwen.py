@@ -14,6 +14,8 @@ from .prompts import (
     QUERY_SYSTEM_PROMPT,
     annotation_user_prompt,
     query_user_prompt,
+    VIDEO_SYSTEM_PROMPT,
+    video_user_prompt,
 )
 from .providers import ModelProvider, load_provider
 
@@ -23,6 +25,13 @@ class ModelProviderError(RuntimeError):
 
 
 QwenError = ModelProviderError
+
+# The private 4090 answers a `/models` probe in well under a second when a
+# direct path exists. When it is only reachable through a relay the probe can
+# take several seconds, and an 8-second ceiling both reported a healthy service
+# as unavailable and paused a whole indexing batch. A genuinely offline service
+# still fails immediately with a refused connection.
+MODEL_PROBE_TIMEOUT = 20
 
 
 def extract_json(text: str) -> dict[str, Any]:
@@ -81,7 +90,7 @@ class QwenClient:
             if self.provider.api_key:
                 headers["Authorization"] = f"Bearer {self.provider.api_key}"
             request = urllib.request.Request(f"{self.base_url}/models", headers=headers)
-            with urllib.request.urlopen(request, timeout=8) as response:
+            with urllib.request.urlopen(request, timeout=MODEL_PROBE_TIMEOUT) as response:
                 return json.loads(response.read().decode("utf-8"))
         except Exception as error:
             raise ModelProviderError(f"Model API unavailable at {self.base_url}: {error}") from error
@@ -89,20 +98,29 @@ class QwenClient:
     def annotate(self, image_path: Path, ocr_text: str, metadata: dict[str, Any]) -> tuple[dict[str, Any], str]:
         mime = mimetypes.guess_type(image_path.name)[0] or "image/jpeg"
         image_data = base64.b64encode(image_path.read_bytes()).decode("ascii")
+        return self._annotate_content([
+            {"type": "text", "text": annotation_user_prompt(ocr_text, metadata)},
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_data}"}},
+        ], ANNOTATION_SYSTEM_PROMPT)
+
+    def annotate_video_frames(self, frames, transcript: str, ocr: str, metadata: dict):
+        content = [{"type": "text", "text": video_user_prompt(metadata, transcript=transcript, ocr=ocr)}]
+        for timestamp, path in frames:
+            content.append({"type": "text", "text": f"Frame at {timestamp:.2f} seconds:"})
+            encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+            content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded}"}})
+        return self._annotate_content(content, VIDEO_SYSTEM_PROMPT)
+
+    def summarize_video(self, summaries: list[dict], metadata: dict):
+        return self._annotate_content([{"type": "text", "text": video_user_prompt(metadata, summaries=summaries)}],
+                                      VIDEO_SYSTEM_PROMPT)
+
+    def _annotate_content(self, content: list[dict], system: str):
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": ANNOTATION_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": annotation_user_prompt(ocr_text, metadata)},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:{mime};base64,{image_data}"},
-                        },
-                    ],
-                },
+                {"role": "system", "content": system},
+                {"role": "user", "content": content},
             ],
             "temperature": 0.1,
             "max_tokens": 2200,
@@ -111,6 +129,8 @@ class QwenClient:
             payload["response_format"] = {"type": "json_object"}
         if self.provider.qwen_thinking_control:
             payload["chat_template_kwargs"] = {"enable_thinking": False}
+        if self.provider.reasoning_effort is not None:
+            payload["reasoning_effort"] = self.provider.reasoning_effort
         result = self._post("/chat/completions", payload, timeout=300)
         message = result["choices"][0]["message"]
         content = message.get("content") or ""
@@ -132,6 +152,8 @@ class QwenClient:
             payload["response_format"] = {"type": "json_object"}
         if self.provider.qwen_thinking_control:
             payload["chat_template_kwargs"] = {"enable_thinking": False}
+        if self.provider.reasoning_effort is not None:
+            payload["reasoning_effort"] = self.provider.reasoning_effort
         result = self._post("/chat/completions", payload, timeout=90)
         content = result["choices"][0]["message"].get("content") or ""
         parsed = extract_json(content)

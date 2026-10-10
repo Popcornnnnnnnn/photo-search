@@ -19,6 +19,11 @@ enum Layout {
     static let mainInset: CGFloat = 20
     static let hairline: CGFloat = 1
 
+    // Result cards keep a stable footprint across photos, screenshots, and documents.
+    static let photoPreviewHeight: CGFloat = 276
+    static let photoCardInset: CGFloat = 12
+    static let photoCardTextSpacing: CGFloat = 8
+
     // User-resizable sidebar bounds and the drag handle straddling each column divider.
     static let sidebarMinWidth: CGFloat = 180
     static let sidebarMaxWidth: CGFloat = 420
@@ -74,6 +79,7 @@ enum Prefs {
     static let reduceTransparency = "lg.reduceTransparency"
     static let increaseContrast = "lg.increaseContrast"
     static let searchHistory = "photoSearch.searchHistory"
+    static let offloadEncoderWhenTight = "photoSearch.offloadEncoderWhenTight"
 }
 
 extension EnvironmentValues {

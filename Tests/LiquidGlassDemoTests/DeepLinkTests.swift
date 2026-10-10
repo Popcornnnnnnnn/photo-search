@@ -4,20 +4,20 @@ import Testing
 
 @Suite struct DeepLinkTests {
     @Test func parsesThemeLink() {
-        #expect(DeepLink(url: URL(string: "liquidglassdemo://theme/ember")!) == .theme(.ember))
-        #expect(DeepLink(url: URL(string: "liquidglassdemo://theme/cyberpunk")!) == .theme(.cyberpunk))
+        #expect(DeepLink(url: URL(string: "photosearch://theme/ember")!) == .theme(.ember))
+        #expect(DeepLink(url: URL(string: "photosearch://theme/cyberpunk")!) == .theme(.cyberpunk))
     }
 
     @Test func rejectsUnknownTheme() {
-        #expect(DeepLink(url: URL(string: "liquidglassdemo://theme/plaid")!) == nil)
+        #expect(DeepLink(url: URL(string: "photosearch://theme/plaid")!) == nil)
     }
 
     @Test func rejectsMissingThemeID() {
-        #expect(DeepLink(url: URL(string: "liquidglassdemo://theme")!) == nil)
+        #expect(DeepLink(url: URL(string: "photosearch://theme")!) == nil)
     }
 
     @Test func rejectsUnknownHost() {
-        #expect(DeepLink(url: URL(string: "liquidglassdemo://settings")!) == nil)
+        #expect(DeepLink(url: URL(string: "photosearch://settings")!) == nil)
     }
 
     @Test func rejectsWrongScheme() {

@@ -1,0 +1,23 @@
+{
+  "annotation": 14,
+  "transcript": 14,
+  "video-scenes": 14,
+  "search_docs": 14,
+  "search_fts": 14,
+  "video_vectors": 14,
+  "all_skips": 0,
+  "new_processing_errors": 0,
+  "original_files_unchanged": 14,
+  "app_total": 9371,
+  "app_indexed": 9371,
+  "worker": {
+    "status": "complete",
+    "pending": 0,
+    "embedding_pending": 0,
+    "skipped": 0,
+    "last_error": null,
+    "embedding_error": null
+  },
+  "backend_tests_passed": 53,
+  "real_video_frames_verified": 141
+}

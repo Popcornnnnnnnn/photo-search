@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .config import PHOTO_EXPORTER, PROJECT_ROOT, VISION_OCR
+from .config import APP_HOME, PHOTO_EXPORTER, PROJECT_ROOT, VISION_OCR
 
 
 class NativeHelperError(RuntimeError):
@@ -36,6 +36,15 @@ def run_ocr(image_path: Path) -> dict[str, Any]:
     return json.loads(process.stdout)
 
 
+def simplify_chinese(text: str) -> str:
+    ensure_native()
+    process = subprocess.run([str(VISION_OCR), "--simplify-text"], input=text,
+                             capture_output=True, text=True, timeout=180)
+    if process.returncode:
+        raise NativeHelperError(process.stderr.strip() or "Local Chinese normalization failed")
+    return process.stdout
+
+
 def export_library_photos(output_dir: Path, limit: int, strategy: str = "recent") -> dict[str, Any]:
     ensure_native()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -45,8 +54,8 @@ def export_library_photos(output_dir: Path, limit: int, strategy: str = "recent"
     started_at = time.time()
     process = subprocess.run(
         [
-            "open", "-W", "-n", str(app_bundle), "--args", "--output", str(output_dir),
-            "--limit", str(limit), "--strategy", strategy,
+            "open", "-g", "-W", "-n", str(app_bundle), "--args", "--output", str(output_dir),
+            "--limit", str(limit), "--strategy", strategy, "--no-prompt",
         ],
         capture_output=True,
         text=True,
@@ -54,15 +63,35 @@ def export_library_photos(output_dir: Path, limit: int, strategy: str = "recent"
     )
     if process.returncode != 0:
         raise NativeHelperError(process.stderr.strip() or "Photo export failed")
-    if not manifest.is_file() or not result_path.is_file():
-        raise NativeHelperError("Photo exporter did not create a manifest")
+    if not result_path.is_file():
+        raise NativeHelperError("Photo exporter did not report a result")
     if result_path.stat().st_mtime < started_at - 1:
         raise NativeHelperError("Photo exporter did not finish this run")
     result = json.loads(result_path.read_text(encoding="utf-8"))
-    if int(result.get("failed", 0)) > 0:
-        raise NativeHelperError(f"Photo exporter failed on {result['failed']} asset(s)")
+    if result.get("error"):
+        raise NativeHelperError(result["error"])
+    if not manifest.is_file():
+        raise NativeHelperError("Photo exporter did not create a manifest")
     return result
 
 
 def export_recent_photos(output_dir: Path, limit: int) -> dict[str, Any]:
     return export_library_photos(output_dir, limit, "recent")
+
+
+def authorize_photos() -> dict[str, Any]:
+    """Only a user-invoked action may display the Photos consent dialog."""
+    ensure_native()
+    output = APP_HOME / "imports/photos-authorization"
+    output.mkdir(parents=True, exist_ok=True, mode=0o700)
+    started = time.time()
+    process = subprocess.run(["open", "-g", "-W", "-n", str(PHOTO_EXPORTER.parents[2]),
+                              "--args", "--output", str(output), "--authorize"],
+                             capture_output=True, text=True, timeout=300)
+    result = output / "result.json"
+    if process.returncode or not result.is_file() or result.stat().st_mtime < started - 1:
+        raise NativeHelperError(process.stderr.strip() or "Photos authorization did not finish")
+    payload = json.loads(result.read_text(encoding="utf-8"))
+    if payload.get("error") or not payload.get("authorized"):
+        raise NativeHelperError(payload.get("error") or "Photos access was not granted")
+    return payload

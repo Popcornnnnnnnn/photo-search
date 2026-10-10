@@ -20,6 +20,7 @@ struct ModelProviderProfile: Codable, Equatable, Identifiable {
     var requiresTailscale: Bool
     var jsonMode: Bool
     var qwenThinkingControl: Bool
+    var reasoningEffort: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, name, kind, model, producer
@@ -27,6 +28,7 @@ struct ModelProviderProfile: Codable, Equatable, Identifiable {
         case requiresTailscale = "requires_tailscale"
         case jsonMode = "json_mode"
         case qwenThinkingControl = "qwen_thinking_control"
+        case reasoningEffort = "reasoning_effort"
     }
 
     static let qwen4090 = ModelProviderProfile(
@@ -39,6 +41,21 @@ struct ModelProviderProfile: Codable, Equatable, Identifiable {
         requiresTailscale: true,
         jsonMode: true,
         qwenThinkingControl: true
+    )
+
+    static let localQwen27B = ModelProviderProfile(
+        id: "qwen-local-27b",
+        name: "Local Qwen 27B",
+        kind: .local,
+        baseURL: "http://127.0.0.1:1234/v1",
+        model: "qwen/qwen3.8-27b",
+        producer: "qwen-vlm-local",
+        requiresTailscale: false,
+        // LM Studio rejects response_format.type = json_object. The prompt
+        // still requests JSON, which the backend parses and validates.
+        jsonMode: false,
+        qwenThinkingControl: false,
+        reasoningEffort: "none"
     )
 
     static func custom() -> ModelProviderProfile {
@@ -117,8 +134,8 @@ final class ModelProviderSettings {
         return Self.readAPIKey(providerID: draftProvider.id) != nil
     }
 
-    func beginAddingProvider() {
-        draftProvider = .custom()
+    func beginAddingProvider(_ profile: ModelProviderProfile = .custom()) {
+        draftProvider = profile
         draftAPIKey = ""
         draftReprocessExisting = configuration.reprocessExisting
         isAddingProvider = true
@@ -185,14 +202,7 @@ final class ModelProviderSettings {
         guard let provider = draftProvider else { return }
         connectionState = .testing
         do {
-            let baseURL = provider.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            guard let url = URL(string: "\(baseURL)/models") else {
-                throw ProviderSettingsError.invalidURL
-            }
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 10
-            let key = draftAPIKey.isEmpty ? Self.readAPIKey(providerID: provider.id) : draftAPIKey
-            if let key, !key.isEmpty { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
+            let request = try Self.connectionRequest(for: provider, apiKey: draftAPIKey.isEmpty ? nil : draftAPIKey)
             let (_, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
                 throw ProviderSettingsError.connectionRejected
@@ -202,6 +212,26 @@ final class ModelProviderSettings {
             connectionState = .failure(error.localizedDescription)
         }
     }
+
+    static func connectionRequest(for provider: ModelProviderProfile, apiKey: String? = nil) throws -> URLRequest {
+        let baseURL = provider.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(baseURL)/models") else {
+            throw ProviderSettingsError.invalidURL
+        }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData,
+                                 timeoutInterval: Self.connectionTimeout)
+        let key = apiKey ?? Self.readAPIKey(providerID: provider.id)
+        if let key, !key.isEmpty { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
+        return request
+    }
+
+    /// Generous enough for a healthy model reached over a relayed path. The
+    /// private 4090 normally answers a small `/models` probe in well under a
+    /// second, but when Tailscale cannot punch a direct connection the same
+    /// probe can take several seconds, and an 8-second ceiling reported a
+    /// perfectly healthy service as unavailable. A genuinely offline service
+    /// still fails fast with a refused connection.
+    static let connectionTimeout: TimeInterval = 20
 
     private static func validate(_ provider: inout ModelProviderProfile) throws {
         provider.name = provider.name.trimmingCharacters(in: .whitespacesAndNewlines)

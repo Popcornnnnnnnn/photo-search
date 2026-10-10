@@ -5,18 +5,19 @@ import json
 import sys
 from pathlib import Path
 
-from .benchmark import evaluate_benchmark, evaluate_query_expansion, prepare_benchmark
+from .benchmark import evaluate_benchmark, evaluate_query_expansion, evaluate_search, prepare_benchmark
 from .config import APP_HOME, DATABASE_PATH, PHOTO_EXPORTER, VISION_OCR
 from .db import Database
+from .encoder_server import serve as serve_encoder
 from .indexer import index_assets
-from .native import build_native
+from .native import build_native, authorize_photos
 from .qwen import QwenClient
 from .providers import load_provider
 from .search import search
 from .sources import import_files, import_library_benchmark_sample, import_photos_selection
-from .web import serve
 from .worker import load_worker_status, run_full_library_worker
 from .network import load_network_status, recover_model_connection
+from .embeddings import index_embeddings
 
 
 def parser() -> argparse.ArgumentParser:
@@ -24,6 +25,7 @@ def parser() -> argparse.ArgumentParser:
     commands = root.add_subparsers(dest="command", required=True)
 
     commands.add_parser("build-native", help="Build the PhotoKit and Vision helpers")
+    commands.add_parser("authorize-photos", help="Request Photos access after an explicit user action")
     commands.add_parser("doctor", help="Check local helpers, database, and Qwen API")
 
     sample = commands.add_parser("sample", help="Import the current selection from Apple Photos")
@@ -48,12 +50,14 @@ def parser() -> argparse.ArgumentParser:
     searching.add_argument("query")
     searching.add_argument("--limit", type=int, default=20)
     searching.add_argument("--no-expand", action="store_true")
+    searching.add_argument("--expand", action="store_true", help="Also ask the annotation model to expand query terms")
+    searching.add_argument("--lexical-only", action="store_true")
     searching.add_argument("--json", action="store_true")
 
-    server = commands.add_parser("serve", help="Run the local search page")
-    server.add_argument("--host", default="127.0.0.1")
-    server.add_argument("--port", type=int, default=8766)
+    embedding = commands.add_parser("index-embeddings", help="Resume a local image-vector batch")
+    embedding.add_argument("--limit", type=int, default=100)
 
+    commands.add_parser("encoder-serve", help="Serve query vectors to the app over stdio")
     commands.add_parser("stats", help="Show index counts")
     commands.add_parser("worker-run", help="Resume the unattended full-library worker")
     commands.add_parser("worker-status", help="Show unattended worker progress")
@@ -67,6 +71,9 @@ def parser() -> argparse.ArgumentParser:
 
     evaluate = commands.add_parser("benchmark-evaluate", help="Import vectors and score retrieval")
     evaluate.add_argument("directory")
+
+    live_evaluate = commands.add_parser("benchmark-search", help="Evaluate the production hybrid search against saved cases")
+    live_evaluate.add_argument("directory")
 
     query_expansion = commands.add_parser(
         "benchmark-query-expansion", help="Score the live Qwen query-expansion path"
@@ -87,6 +94,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "build-native":
             build_native()
+            return 0
+        if args.command == "authorize-photos":
+            print(json.dumps(authorize_photos()))
             return 0
         if args.command == "doctor":
             provider = load_provider()
@@ -133,15 +143,20 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "search":
             with Database() as db:
-                result = search(db, args.query, limit=args.limit, expand=not args.no_expand)
+                result = search(db, args.query, limit=args.limit, expand=args.expand and not args.no_expand, hybrid=not args.lexical_only)
             if args.json:
                 print(json.dumps(result, ensure_ascii=False, indent=2))
             else:
                 print_results(result)
             return 0
-        if args.command == "serve":
-            serve(args.host, args.port)
+        if args.command == "index-embeddings":
+            if args.limit < 1:
+                raise ValueError("limit must be positive")
+            with Database() as db:
+                print(json.dumps(index_embeddings(db, limit=args.limit)))
             return 0
+        if args.command == "encoder-serve":
+            return serve_encoder()
         if args.command == "stats":
             with Database() as db:
                 print(json.dumps(db.stats(), indent=2))
@@ -177,6 +192,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "benchmark-evaluate":
             with Database() as db:
                 print(json.dumps(evaluate_benchmark(db, Path(args.directory)), ensure_ascii=False, indent=2))
+            return 0
+        if args.command == "benchmark-search":
+            with Database() as db:
+                print(json.dumps(evaluate_search(db, Path(args.directory)), ensure_ascii=False, indent=2))
             return 0
         if args.command == "benchmark-query-expansion":
             with Database() as db:

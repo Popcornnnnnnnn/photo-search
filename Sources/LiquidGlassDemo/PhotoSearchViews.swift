@@ -1,10 +1,15 @@
+import AVKit
 import SwiftUI
 
 struct PhotoSidebar: View {
     @Environment(ThemeStore.self) private var theme
     let store: PhotoSearchStore
+    let activity: PhotoIndexActivity
     @Bindable var ui: UIState
+    let onRandomBrowse: () -> Void
+    let onReview: () -> Void
 
+    @State private var randomHovering = false
     @State private var settingsHovering = false
 
     var body: some View {
@@ -22,11 +27,51 @@ struct PhotoSidebar: View {
                     section: section,
                     selected: store.section == section
                 ) {
+                    if store.isViewerPresented { store.closeViewer() }
                     store.section = section
                 }
             }
 
             Spacer()
+
+            Button(action: onRandomBrowse) {
+                HStack(spacing: 9) {
+                    Image(systemName: "shuffle")
+                        .frame(width: 17)
+                    Text("Browse randomly")
+                    Spacer()
+                }
+                .font(Typography.body)
+                .foregroundStyle(randomHovering ? theme.textPrimary : theme.textSecondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(
+                    RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
+                        .fill(randomHovering ? theme.hoverFill : .clear)
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pointerStyle(.link)
+            .help("Show a random photo")
+            .onHover { randomHovering = $0 }
+            .animation(.easeOut(duration: 0.14), value: randomHovering)
+
+            Button(action: onReview) {
+                HStack(spacing: 9) {
+                    Image(systemName: "checklist").frame(width: 17)
+                    Text("Review photos")
+                    Spacer()
+                }
+                .font(Typography.body)
+                .foregroundStyle(theme.textSecondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(HoverButtonStyle(horizontalPadding: 0, verticalPadding: 0, cornerRadius: Radius.row))
+            .pointerStyle(.link)
+            .help("Review possible blank, blurred or accidental photos")
 
             Button {
                 ui.showSettings = true
@@ -58,7 +103,7 @@ struct PhotoSidebar: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(.green)
+                        .fill(activityTint)
                         .frame(width: 7, height: 7)
                     Text("\(store.stats.indexed.formatted()) of \(store.stats.total.formatted()) indexed")
                         .foregroundStyle(theme.textPrimary)
@@ -71,6 +116,11 @@ struct PhotoSidebar: View {
                 .progressViewStyle(.linear)
                 .controlSize(.mini)
                 .tint(theme.accent)
+
+                if let caption = activity.caption {
+                    Text(caption)
+                        .foregroundStyle(theme.textSecondary)
+                }
 
                 if store.stats.failed > 0 {
                     Label(
@@ -94,6 +144,15 @@ struct PhotoSidebar: View {
         .padding(.top, Layout.headerHeight)
         .padding(.bottom, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var activityTint: Color {
+        switch activity {
+        case .indexing: .green
+        case .paused, .completeWithErrors: .orange
+        case .complete: .green
+        case .idle, .waiting, .stale: theme.textSecondary.opacity(0.4)
+        }
     }
 }
 
@@ -122,24 +181,15 @@ private struct PhotoSidebarRow: View {
             .background { rowBackground }
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(HoverButtonStyle(horizontalPadding: 0, verticalPadding: 0, cornerRadius: Radius.row))
         .pointerStyle(.link)
         .onHover { hovering = $0 }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hovering)
     }
 
-    @ViewBuilder
     private var rowBackground: some View {
-        if selected || hovering {
-            if #available(macOS 26, *) {
-                RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
-                    .fill(theme.panel.opacity(selected ? 0.20 : 0.12))
-                    .glassEffect(.clear.interactive(), in: .rect(cornerRadius: Radius.row))
-            } else {
-                RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
-                    .fill(selected ? theme.selectionFill : theme.hoverFill)
-            }
-        }
+        RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
+            .fill(selected ? theme.selectionFill : (hovering ? theme.hoverFill : .clear))
     }
 }
 
@@ -148,6 +198,8 @@ struct PhotoSearchBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let store: PhotoSearchStore
     let history: SearchHistoryStore
+    let encoder: PhotoEncoderStore
+    @Binding var thumbnailContentMode: ContentMode
     let onEmpty: () -> Void
 
     @FocusState private var focused: Bool
@@ -156,69 +208,87 @@ struct PhotoSearchBar: View {
 
     var body: some View {
         @Bindable var store = store
-        HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(focused ? theme.accent : theme.textSecondary)
+        HStack(spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(focused ? theme.accent : theme.textSecondary)
 
-            TextField("Search people, places, text, screenshots…", text: $store.query)
-                .textFieldStyle(.plain)
-                .font(.system(size: 15))
-                .focused($focused)
-                .onSubmit { history.record(store.query) }
+                TextField("Search photos…", text: $store.query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 15))
+                    .focused($focused)
+                    .onSubmit { store.submit(history: history, encoder: encoder) }
 
-            if !store.query.isEmpty {
-                Button {
-                    store.query = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 15))
-                        .foregroundStyle(clearHovering ? theme.textPrimary : theme.textSecondary)
-                        .frame(width: 24, height: 24)
-                        .background(clearHovering ? theme.hoverFill : .clear, in: Circle())
+                if !store.query.isEmpty {
+                    Button {
+                        store.query = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 15))
+                            .foregroundStyle(clearHovering ? theme.textPrimary : theme.textSecondary)
+                            .frame(width: 24, height: 24)
+                            .background(clearHovering ? theme.hoverFill : .clear, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .help("Clear search")
+                    .accessibilityLabel("Clear search")
+                    .onHover { clearHovering = $0 }
                 }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                .help("Clear search")
-                .accessibilityLabel("Clear search")
-                .onHover { clearHovering = $0 }
+
+                Button {
+                    store.submit(history: history, encoder: encoder)
+                } label: {
+                    Image(systemName: "arrow.up")
+                }
+                .buttonStyle(HoverButtonStyle())
+                .disabled(store.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .help(String(localized: "Search · Return", bundle: .module))
+                .accessibilityLabel(String(localized: "Search", bundle: .module))
+
+                Rectangle()
+                    .fill(theme.divider.opacity(0.75))
+                    .frame(width: Layout.hairline, height: 16)
+
+                if store.isLoading {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .accessibilityLabel("Searching photos")
+                }
+                Text(resultCountLabel)
+                    .font(.caption2)
+                    .foregroundStyle(theme.textSecondary.opacity(0.82))
+                    .fixedSize()
             }
-
-            SearchHistoryButton(history: history) { query in
-                history.record(query)
-                store.query = query
+            .padding(.horizontal, 17)
+            .frame(height: 44)
+            .modifier(SearchGlassSurface(active: focused, hovering: hovering))
+            .overlay {
+                Capsule()
+                    .strokeBorder(
+                        focused
+                            ? theme.accent.opacity(0.58)
+                            : theme.textPrimary.opacity(hovering ? 0.13 : 0.07),
+                        lineWidth: 1
+                    )
             }
+            .shadow(
+                color: focused ? theme.accent.opacity(0.12) : .black.opacity(hovering ? 0.08 : 0.045),
+                radius: focused ? 13 : (hovering ? 8 : 5),
+                y: 2
+            )
+            .contentShape(Capsule())
+            .onTapGesture { focused = true }
+            .onHover { hovering = $0 }
 
-            Rectangle()
-                .fill(theme.divider.opacity(0.75))
-                .frame(width: Layout.hairline, height: 16)
+            // Sits beside the field rather than on its own row below, so the
+            // library grid starts higher and there is no second control strip.
+            PhotoDateFilterButton(selection: $store.timeFilter)
 
-            Text(resultCountLabel)
-                .font(.caption2)
-                .foregroundStyle(theme.textSecondary.opacity(0.82))
-                .fixedSize()
+            PhotoImageSizingPicker(selection: $thumbnailContentMode)
         }
-        .padding(.horizontal, 17)
-        .frame(height: 44)
-        .modifier(SearchGlassSurface(active: focused, hovering: hovering))
-        .overlay {
-            Capsule()
-                .strokeBorder(
-                    focused
-                        ? theme.accent.opacity(0.58)
-                        : theme.textPrimary.opacity(hovering ? 0.13 : 0.07),
-                    lineWidth: 1
-                )
-        }
-        .shadow(
-            color: focused ? theme.accent.opacity(0.12) : .black.opacity(hovering ? 0.08 : 0.045),
-            radius: focused ? 13 : (hovering ? 8 : 5),
-            y: 2
-        )
         .frame(maxWidth: 660)
-        .contentShape(Capsule())
-        .onTapGesture { focused = true }
-        .onHover { hovering = $0 }
         .onChange(of: store.query) { _, newValue in
             if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 onEmpty()
@@ -229,10 +299,60 @@ struct PhotoSearchBar: View {
     }
 
     private var resultCountLabel: String {
-        if store.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if store.submittedQuery.isEmpty {
             return store.section.countDescription(store.resultCount)
         }
         return "\(store.resultCount.formatted()) results"
+    }
+}
+
+private struct PhotoImageSizingPicker: View {
+    @Environment(ThemeStore.self) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding var selection: ContentMode
+    @Namespace private var highlight
+
+    var body: some View {
+        HStack(spacing: 2) {
+            modeButton(.fit, title: "Fit", icon: "arrow.down.right.and.arrow.up.left",
+                       help: "Show the entire image")
+            modeButton(.fill, title: "Fill", icon: "arrow.up.left.and.arrow.down.right",
+                       help: "Fill each card, cropping the edges")
+        }
+        .padding(3)
+        .background(theme.selectionFill, in: RoundedRectangle(cornerRadius: 10))
+        .themedBorder(10)
+        .fixedSize()
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Image sizing")
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: selection)
+    }
+
+    private func modeButton(_ mode: ContentMode, title: String, icon: String, help: String) -> some View {
+        Button {
+            selection = mode
+        } label: {
+            Label(title, systemImage: icon)
+                .labelStyle(.titleAndIcon)
+                .font(Typography.control)
+                .foregroundStyle(selection == mode ? theme.accent : theme.textSecondary)
+                .frame(width: 74, height: 30)
+                .background {
+                    if selection == mode {
+                        RoundedRectangle(cornerRadius: 7)
+                            .fill(theme.background)
+                            .shadow(color: .black.opacity(0.08), radius: 2, y: 1)
+                            .matchedGeometryEffect(id: "selection", in: highlight)
+                    }
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 7))
+        }
+        .buttonStyle(HoverButtonStyle(horizontalPadding: 0, verticalPadding: 0, cornerRadius: 7))
+        .pointerStyle(.link)
+        .help(help)
+        .accessibilityLabel(title)
+        .accessibilityHint(help)
+        .accessibilityAddTraits(selection == mode ? .isSelected : [])
     }
 }
 
@@ -241,336 +361,325 @@ struct PhotoLandingSearchView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @Binding var query: String
-    let history: SearchHistoryStore
+    let encoder: PhotoEncoderStore
+    let indexedCount: Int
     let onSubmit: () -> Void
+    let onBrowse: () -> Void
+    let onRandomBrowse: () -> Void
+    let onSettings: () -> Void
 
     @FocusState private var focused: Bool
     @State private var hovering = false
     @State private var submitHovering = false
-    @State private var rainbowPhase = 0.0
-    @State private var pointerPhase = 0.0
     @State private var pointerPosition = UnitPoint.center
+    @State private var fieldSize = CGSize(width: 720, height: 64)
+    @State private var rainbowPhase = 0.0
+
+    private let searchBlue = Color(hex: 0x2463EB)
 
     private var canSubmit: Bool {
         !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
+        VStack(spacing: 18) {
+            searchField
+                .frame(maxWidth: 720)
+
+            EncoderLoadNotice(store: encoder)
+                .frame(maxWidth: 720)
+
+            entries
+        }
+            .frame(maxWidth: 720)
+            .overlay(alignment: .top) {
+                branding
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 32)
+                    .alignmentGuide(.top) { $0[.bottom] }
+            }
+    }
+
+    /// Ways into the library that don't require typing a query first.
+    private var entries: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 10) {
+                LandingEntryButton(
+                    title: "Browse library",
+                    systemImage: "photo.on.rectangle.angled",
+                    action: onBrowse
+                )
+                LandingEntryButton(
+                    title: "Browse randomly",
+                    systemImage: "shuffle",
+                    action: onRandomBrowse
+                )
+                LandingEntryButton(
+                    title: "Settings",
+                    systemImage: "slider.horizontal.3",
+                    action: onSettings
+                )
+            }
+
+            // Appears once the index count lands; kept out of the button label so
+            // the buttons never change width while the library loads.
+            if indexedCount > 0 {
+                Text("\(indexedCount.formatted()) photos indexed")
+                    .font(.system(size: 12))
+                    .foregroundStyle(theme.textSecondary.opacity(0.85))
+            }
+        }
+    }
+
+    private var branding: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 9) {
+            AppIconView()
+                .scaleEffect(96 / 1024)
+                .frame(width: 96, height: 96)
+                .accessibilityHidden(true)
+                .allowsHitTesting(false)
+                .padding(.bottom, 12)
+
+            VStack(spacing: 8) {
                 Text("Photo Search")
-                    .font(.system(size: 38, weight: .semibold, design: .rounded))
+                    .font(.system(size: 32, weight: .semibold))
+                    .tracking(-0.7)
                     .foregroundStyle(theme.textPrimary)
 
-                Text("Search your Photos by meaning, text, or moment.")
+                Text("Find a photo from what you remember.")
                     .font(.system(size: 15))
                     .foregroundStyle(theme.textSecondary)
             }
-            .padding(.bottom, 28)
-
-            searchField
         }
-        .frame(maxWidth: 720)
     }
 
     private var searchField: some View {
         HStack(spacing: 12) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(focused ? theme.accent : theme.textSecondary)
+                .font(.system(size: 19, weight: .medium))
+                .foregroundStyle(searchBlue)
+                .accessibilityHidden(true)
 
-            TextField("Search people, moments, text, or anything…", text: $query)
+            TextField("", text: $query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 17))
+                .foregroundStyle(theme.textPrimary)
                 .focused($focused)
                 .onSubmit(submit)
-
-            SearchHistoryButton(history: history) { previousQuery in
-                query = previousQuery
-                submit()
-            }
+                .overlay(alignment: .leading) {
+                    // Hidden while focused: during IME composition the field is
+                    // still empty, so an overlay placeholder would draw on top of
+                    // the marked text the input method is composing.
+                    if query.isEmpty && !focused {
+                        Text("Describe a photo, a moment, or text…")
+                            .font(.system(size: 17))
+                            .foregroundStyle(theme.textSecondary)
+                            .lineLimit(1)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .accessibilityLabel("Search photos")
+                .accessibilityHint("Describe a photo, a moment, or text")
 
             Button(action: submit) {
                 Image(systemName: "arrow.up")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(canSubmit ? Color.white : theme.textSecondary.opacity(0.65))
-                    .frame(width: 30, height: 30)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(canSubmit ? Color.white : theme.textSecondary)
+                    .frame(width: 36, height: 36)
                     .background(
                         canSubmit
-                            ? theme.accent.opacity(submitHovering ? 1 : 0.88)
-                            : theme.textSecondary.opacity(0.10),
+                            ? searchBlue.opacity(submitHovering ? 0.85 : 1)
+                            : theme.textSecondary.opacity(0.08),
                         in: Circle()
                     )
             }
             .buttonStyle(.plain)
             .pointerStyle(.link)
             .disabled(!canSubmit)
-            .help("Search")
+            .help("Search · Return")
             .accessibilityLabel("Search")
             .onHover { submitHovering = $0 }
         }
-        .padding(.horizontal, 19)
-        .frame(height: 56)
+        .padding(.leading, 22)
+        .padding(.trailing, 14)
+        .frame(height: 64)
         .modifier(SearchGlassSurface(active: focused, hovering: hovering))
         .background {
-            ZStack {
-                Capsule()
-                    .fill(theme.accent.opacity(focused ? 0.075 : (hovering ? 0.05 : 0.025)))
-                    .blur(radius: focused ? 24 : 18)
-                    .padding(-7)
-
-                Capsule()
-                    .stroke(rainbowGradient, lineWidth: focused ? 9 : 6)
-                    .blur(radius: focused ? 13 : 10)
-                    .opacity(rainbowOpacity * 0.38)
-                    .padding(-3)
-
-                RadialGradient(
-                    colors: [.white.opacity(0.24), theme.accent.opacity(0.08), .clear],
-                    center: pointerPosition,
-                    startRadius: 0,
-                    endRadius: 170
-                )
-                .clipShape(Capsule())
-                .opacity(hovering ? 0.75 : 0)
-            }
+            Capsule()
+                .stroke(rainbowGradient, lineWidth: 7)
+                .blur(radius: 12)
+                .opacity(focused ? 0.20 : (hovering ? 0.14 : 0.06))
+                .padding(-2)
         }
         .overlay {
             ZStack {
                 Capsule()
                     .strokeBorder(
-                        theme.textPrimary.opacity(hovering || focused ? 0.10 : 0.055),
+                        theme.textPrimary.opacity(focused ? 0.05 : 0.12),
                         lineWidth: 1
                     )
 
                 Capsule()
                     .strokeBorder(
                         rainbowGradient,
-                        lineWidth: focused ? 2.1 : (hovering ? 1.7 : 1.15)
+                        lineWidth: focused ? 1.7 : 1.2
                     )
-                    .opacity(rainbowOpacity)
+                    .opacity(focused ? 0.82 : (hovering ? 0.65 : 0.32))
 
                 Capsule()
                     .strokeBorder(
-                        LinearGradient(
-                            colors: [.white.opacity(0.32), .white.opacity(0.06), .clear],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: Layout.hairline
+                        LinearGradient(colors: [.white.opacity(0.65), .clear],
+                                       startPoint: .top, endPoint: .bottom),
+                        lineWidth: 0.75
                     )
-                    .padding(1)
+                    .padding(1.5)
+
+                Capsule()
+                    .strokeBorder(
+                        RadialGradient(
+                            colors: [.white.opacity(0.95), .white.opacity(0.25), .clear],
+                            center: pointerPosition,
+                            startRadius: 0,
+                            endRadius: 190
+                        ),
+                        lineWidth: 2
+                    )
+                    .opacity(hovering && !reduceMotion ? 0.8 : 0)
             }
+            .allowsHitTesting(false)
         }
+        .shadow(color: .black.opacity(0.045), radius: 16, y: 7)
         .shadow(
-            color: focused ? theme.accent.opacity(0.14) : .black.opacity(hovering ? 0.10 : 0.06),
-            radius: focused ? 17 : (hovering ? 11 : 7),
-            y: 3
+            color: searchBlue.opacity(focused ? 0.07 : 0),
+            radius: 12,
+            y: 4
         )
-        .scaleEffect(hovering && !focused ? 1.004 : 1)
         .contentShape(Capsule())
         .onTapGesture { focused = true }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { fieldSize = $0 }
         .onContinuousHover { phase in
             switch phase {
             case .active(let location):
                 hovering = true
-                let x = min(max(location.x / 720, 0), 1)
-                let y = min(max(location.y / 56, 0), 1)
+                guard !reduceMotion else { return }
+                let x = min(max(location.x / max(1, fieldSize.width), 0), 1)
+                let y = min(max(location.y / max(1, fieldSize.height), 0), 1)
                 pointerPosition = UnitPoint(x: x, y: y)
-                pointerPhase = (x - 0.5) * 150 + (y - 0.5) * 36
             case .ended:
                 hovering = false
                 pointerPosition = .center
-                pointerPhase = 0
             }
         }
-        .task {
+        .task(id: reduceMotion) {
             focused = true
-            guard !reduceMotion else { return }
             rainbowPhase = 0
-            withAnimation(.linear(duration: 10).repeatForever(autoreverses: false)) {
+            guard !reduceMotion else { return }
+            withAnimation(.linear(duration: 18).repeatForever(autoreverses: false)) {
                 rainbowPhase = 360
             }
         }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: hovering)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.10), value: pointerPosition)
-        .animation(.easeOut(duration: 0.16), value: focused)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.20), value: hovering)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: pointerPosition)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.20), value: focused)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: canSubmit)
     }
 
     private func submit() {
         guard canSubmit else { return }
-        history.record(query)
         onSubmit()
     }
 
-    private var rainbowOpacity: Double {
-        if focused { return 0.82 }
-        if hovering { return 0.60 }
-        return 0.24
-    }
-
     private var rainbowGradient: AngularGradient {
-        AngularGradient(
+        let angle = rainbowPhase + (pointerPosition.x - 0.5) * 36
+        return AngularGradient(
             colors: [
-                Color(hex: 0x4285F4),
-                Color(hex: 0x65D5F2),
-                Color(hex: 0xA142F4),
-                Color(hex: 0xEA4335),
-                Color(hex: 0xFBBC04),
-                Color(hex: 0x34A853),
-                Color(hex: 0x4285F4)
+                Color(hex: 0x4B83F5), Color(hex: 0x51CDBF),
+                Color(hex: 0xF3C565), Color(hex: 0xF58D9B),
+                Color(hex: 0xB08AE8), Color(hex: 0x76C5F4),
+                Color(hex: 0x4B83F5)
             ],
-            center: pointerPosition,
-            startAngle: .degrees(rainbowPhase + pointerPhase),
-            endAngle: .degrees(rainbowPhase + pointerPhase + 360)
+            center: .center,
+            startAngle: .degrees(angle),
+            endAngle: .degrees(angle + 360)
         )
     }
 }
 
-private struct SearchHistoryButton: View {
+/// Shown while the visual-search encoder loads its model into memory.
+///
+/// The model is a 2B vision transformer held by a separate process, so the first
+/// search after an offload has to wait for it. The bar tracks the real load
+/// stages rather than animating on its own.
+struct EncoderLoadNotice: View {
     @Environment(ThemeStore.self) private var theme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    let history: SearchHistoryStore
-    let onSelect: (String) -> Void
-
-    @State private var isPresented = false
-    @State private var hovering = false
+    let store: PhotoEncoderStore
 
     var body: some View {
-        if !history.entries.isEmpty {
-            Button {
-                isPresented.toggle()
-            } label: {
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(
-                        hovering || isPresented
-                            ? theme.textPrimary
-                            : theme.textSecondary.opacity(0.52)
-                    )
-                    .frame(width: 28, height: 28)
-                    .background(
-                        hovering || isPresented ? theme.hoverFill : .clear,
-                        in: Circle()
-                    )
-            }
-            .buttonStyle(.plain)
-            .pointerStyle(.link)
-            .help("Search history")
-            .accessibilityLabel("Search history")
-            .accessibilityValue("\(history.entries.count) saved searches")
-            .onHover { hovering = $0 }
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hovering)
-            .popover(isPresented: $isPresented, arrowEdge: .bottom) {
-                SearchHistoryPopover(
-                    entries: history.recentEntries,
-                    onSelect: { query in
-                        isPresented = false
-                        onSelect(query)
-                    },
-                    onRemove: { query in
-                        history.remove(query)
-                        if history.entries.isEmpty { isPresented = false }
-                    },
-                    onClear: {
-                        history.clear()
-                        isPresented = false
-                    }
-                )
-            }
-        }
-    }
-}
-
-private struct SearchHistoryPopover: View {
-    @Environment(ThemeStore.self) private var theme
-
-    let entries: [String]
-    let onSelect: (String) -> Void
-    let onRemove: (String) -> Void
-    let onClear: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("Recent Searches", systemImage: "clock.arrow.circlepath")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(theme.textSecondary)
-
-                Spacer()
-
-                Button("Clear History", action: onClear)
-                    .buttonStyle(.plain)
-                    .font(.caption)
-                    .foregroundStyle(theme.textSecondary)
-                    .pointerStyle(.link)
-            }
-
-            VStack(spacing: 2) {
-                ForEach(entries, id: \.self) { entry in
-                    SearchHistoryRow(
-                        query: entry,
-                        onSelect: { onSelect(entry) },
-                        onRemove: { onRemove(entry) }
-                    )
-                }
-            }
-        }
-        .padding(12)
-        .frame(width: 390)
-    }
-}
-
-private struct SearchHistoryRow: View {
-    @Environment(ThemeStore.self) private var theme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    let query: String
-    let onSelect: () -> Void
-    let onRemove: () -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Button(action: onSelect) {
-                HStack(spacing: 9) {
-                    Image(systemName: "clock")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(theme.textSecondary.opacity(0.72))
-
-                    Text(query)
-                        .font(.system(size: 13))
+        if store.isLoading {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: "eye.circle")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(theme.accent)
+                    Text("Preparing visual search")
+                        .font(Typography.control)
                         .foregroundStyle(theme.textPrimary)
-                        .lineLimit(1)
-
-                    Spacer(minLength: 8)
+                    Spacer()
+                    Text("\(Int((store.loadProgress * 100).rounded()))%")
+                        .font(Typography.footnote)
+                        .foregroundStyle(theme.textSecondary)
+                        .monospacedDigit()
                 }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .pointerStyle(.link)
-
-            Button(action: onRemove) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .semibold))
+                ProgressView(value: store.loadProgress)
+                    .progressViewStyle(.linear)
+                    .tint(theme.accent)
+                Text(store.loadStage)
+                    .font(Typography.footnote)
                     .foregroundStyle(theme.textSecondary)
-                    .frame(width: 24, height: 24)
+                    .lineLimit(1)
             }
-            .buttonStyle(.plain)
-            .pointerStyle(.link)
-            .help("Remove from history")
-            .accessibilityLabel("Remove \(query) from history")
-            .opacity(hovering ? 1 : 0)
+            .padding(12)
+            .background(theme.background.opacity(0.55), in: RoundedRectangle(cornerRadius: Radius.content))
+            .themedBorder(Radius.content)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Preparing visual search")
+            .accessibilityValue(store.loadStage)
         }
-        .padding(.leading, 10)
-        .padding(.trailing, 5)
-        .frame(height: 34)
-        .background(hovering ? theme.hoverFill : .clear, in: RoundedRectangle(cornerRadius: 8))
-        .contentShape(Rectangle())
+    }
+}
+
+/// Secondary action on the landing screen: quiet capsule, icon plus a plain
+/// command name, so the entries stay visible without competing with the field.
+private struct LandingEntryButton: View {
+    @Environment(ThemeStore.self) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    let title: String
+    let systemImage: String
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 13, weight: .medium))
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+            }
+            .foregroundStyle(hovering ? theme.textPrimary : theme.textSecondary)
+            .padding(.horizontal, 14)
+            .frame(height: 34)
+            .background(Capsule().fill(theme.textPrimary.opacity(hovering ? 0.10 : 0.06)))
+            .overlay { Capsule().strokeBorder(theme.textPrimary.opacity(0.08), lineWidth: 1) }
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
         .onHover { hovering = $0 }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hovering)
     }
 }
 
@@ -652,24 +761,35 @@ private extension View {
 struct PhotoGrid: View {
     @Environment(ThemeStore.self) private var theme
     let store: PhotoSearchStore
-    let onSelection: () -> Void
+    let encoder: PhotoEncoderStore
+    let thumbnailContentMode: ContentMode
+    var scrollToPhotoID: String? = nil
+    var scrollToken = 0
+    let onSelect: (IndexedPhoto) -> Void
 
-    private let columns = [GridItem(.adaptive(minimum: 210, maximum: 280), spacing: 16)]
+    private let columns = [GridItem(.adaptive(minimum: 210, maximum: 280), spacing: 10)]
 
     var body: some View {
         @Bindable var store = store
-        ScrollableContent {
-            LazyVGrid(columns: columns, spacing: 16) {
+        ScrollableContent(scrollToID: scrollToPhotoID, scrollToken: scrollToken) {
+            if let details = store.searchNotice, !store.photos.isEmpty {
+                SearchCoverageNotice(title: store.searchNoticeTitle, details: details)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 10)
+            }
+
+            LazyVGrid(columns: columns, spacing: 10) {
                 ForEach(store.photos) { photo in
                     PhotoCard(
                         photo: photo,
-                        selected: store.selectedID == photo.id
+                        selected: store.selectedID == photo.id,
+                        contentMode: thumbnailContentMode
                     )
+                        .id(photo.id)
                         .onTapGesture(count: 2) { store.openViewer(for: photo) }
                         .simultaneousGesture(
                             TapGesture(count: 1).onEnded {
-                                store.selectedID = photo.id
-                                onSelection()
+                                onSelect(photo)
                             }
                         )
                 }
@@ -677,97 +797,52 @@ struct PhotoGrid: View {
             .padding(.horizontal, 20)
             .padding(.top, 10)
             .padding(.bottom, 20)
+
+            if store.hasMore {
+                HStack {
+                    Spacer()
+                    if store.isLoadingMore {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button(String(localized: "Load more", bundle: .module)) {
+                            Task { await store.loadMore() }
+                        }
+                        .buttonStyle(HoverButtonStyle())
+                    }
+                    Spacer()
+                }
+                .padding(.bottom, 20)
+            }
         }
         .overlay {
             if store.isLoading && store.photos.isEmpty {
-                ProgressView("Loading photo index…")
-                    .padding(22)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                if encoder.isLoading {
+                    EncoderLoadNotice(store: encoder)
+                        .frame(maxWidth: 420)
+                        .padding(20)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                } else {
+                    ProgressView("Loading photo index…")
+                        .padding(22)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                }
             } else if let error = store.errorMessage {
                 ContentUnavailableView("Unable to open the photo index",
                                        systemImage: "exclamationmark.triangle",
                                        description: Text(error))
             } else if store.photos.isEmpty {
-                ContentUnavailableView.search(text: store.query)
-            }
-        }
-    }
-}
-
-private struct PhotoCard: View {
-    @Environment(ThemeStore.self) private var theme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let photo: IndexedPhoto
-    let selected: Bool
-
-    @State private var hovering = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            GeometryReader { proxy in
-                PhotoThumbnailView(
-                    path: photo.thumbnailPath,
-                    maxPixelSize: 480
-                )
-                    .frame(width: proxy.size.width, height: proxy.size.height)
-                    .clipped()
-                    .overlay(alignment: .topLeading) {
-                        Text(photo.displayAssetType)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(theme.textPrimary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(.regularMaterial, in: Capsule())
-                            .overlay {
-                                Capsule()
-                                    .strokeBorder(.white.opacity(0.16), lineWidth: Layout.hairline)
-                            }
-                            .padding(9)
+                if let details = store.searchNotice {
+                    ContentUnavailableView {
+                        Label(store.searchNoticeTitle ?? "No matching photos", systemImage: "magnifyingglass")
+                    } description: {
+                        Text(details)
                     }
+                } else {
+                    ContentUnavailableView.search(text: store.submittedQuery)
+                }
             }
-            .frame(height: 164)
-
-            VStack(alignment: .leading, spacing: 0) {
-                Text(caption)
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(theme.textPrimary)
-                    .lineLimit(2)
-            }
-            .padding(11)
-            .frame(maxWidth: .infinity, minHeight: 62, alignment: .topLeading)
         }
-        .frame(maxWidth: .infinity)
-        .background(
-            theme.panel.opacity(hovering ? 0.94 : 0.82),
-            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(
-                    selected
-                        ? theme.accent.opacity(0.9)
-                        : (hovering ? theme.accent.opacity(0.34) : theme.border.opacity(0.32)),
-                    lineWidth: selected ? 1.5 : Layout.hairline
-                )
-        }
-        .shadow(
-            color: .black.opacity(selected ? 0.14 : (hovering ? 0.10 : 0.025)),
-            radius: selected ? 8 : (hovering ? 9 : 2),
-            y: hovering ? 4 : 1
-        )
-        .scaleEffect(hovering && !reduceMotion ? 1.006 : 1)
-        .offset(y: hovering && !reduceMotion ? -1 : 0)
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .pointerStyle(.link)
-        .onHover { hovering = $0 }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: hovering)
     }
-
-    private var caption: String {
-        photo.shortCaption.isEmpty ? photo.filename : photo.shortCaption
-    }
-
 }
 
 struct PhotoInspector: View {
@@ -815,7 +890,7 @@ struct PhotoInspector: View {
                             Button(revealsSensitiveText ? "Hide" : "Reveal") {
                                 revealsSensitiveText.toggle()
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(HoverButtonStyle(horizontalPadding: 6, verticalPadding: 3))
                             .foregroundStyle(theme.accent)
                             .pointerStyle(.link)
                         }
@@ -846,6 +921,7 @@ struct PhotoInspector: View {
 
                     inspectorSection("DETAILS") {
                         metadataRow("Type", photo.displayAssetType)
+                        if let duration = photo.displayDuration { metadataRow(String(localized: "Duration", bundle: .module), duration) }
                         if let model = photo.model { metadataRow("Model", model) }
                         if let capturedAt = photo.displayCapturedAt { metadataRow("Captured", capturedAt) }
                         if let width = photo.width, let height = photo.height {
@@ -966,19 +1042,37 @@ private struct StructuredDescriptionView: View {
             }
 
             if let full = annotation.detailedDescription, !full.isEmpty {
-                DisclosureGroup(isExpanded: $showsFullDescription) {
-                    Text(display(full))
-                        .font(.caption)
-                        .foregroundStyle(theme.textSecondary)
-                        .textSelection(.enabled)
-                        .padding(.top, 6)
-                } label: {
-                    Label("Full model description", systemImage: "text.alignleft")
+                VStack(alignment: .leading, spacing: 0) {
+                    Button {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                            showsFullDescription.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "chevron.right")
+                                .rotationEffect(.degrees(showsFullDescription ? 90 : 0))
+                                .accessibilityHidden(true)
+                            Label("Full model description", systemImage: "text.alignleft")
+                        }
                         .font(.caption.weight(.medium))
                         .foregroundStyle(theme.textSecondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityValue(showsFullDescription ? "Expanded" : "Collapsed")
+
+                    if showsFullDescription {
+                        Text(display(full))
+                            .font(.caption)
+                            .foregroundStyle(theme.textSecondary)
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 10)
+                            .padding(.bottom, 8)
+                    }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
                 .photoGlassSurface(
                     radius: 9,
                     tintOpacity: fullDescriptionHovering ? 0.30 : 0.20,
@@ -1055,11 +1149,16 @@ private struct StructuredDescriptionView: View {
 struct PhotoOneUpView: View {
     @Environment(ThemeStore.self) private var theme
     @Environment(ErrorStore.self) private var errors
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let store: PhotoSearchStore
-    var reservesWindowControls = false
+    @Binding var infoVisible: Bool
+    var showsToolbar = true
+    var sidebarVisible = false
+    var onToggleSidebar: (() -> Void)? = nil
 
     @FocusState private var focused: Bool
     @State private var zoom: CGFloat = 1
+    @State private var rotationQuarterTurns = 0
     @State private var magnificationBase: CGFloat?
     @State private var panOffset: CGSize = .zero
     @State private var dragBase: CGSize?
@@ -1070,9 +1169,6 @@ struct PhotoOneUpView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            viewerToolbar
-            Rectangle().fill(theme.divider).frame(height: Layout.hairline)
-
             GeometryReader { proxy in
                 ZStack {
                     theme.background.opacity(0.96)
@@ -1086,6 +1182,7 @@ struct PhotoOneUpView: View {
                         viewerPhoto(photo, canvasSize: proxy.size, selected: true)
                             .offset(x: pagingOffset)
                         .onTapGesture(count: 2) {
+                            guard !photo.isVideo else { return }
                             withAnimation(.easeInOut(duration: 0.18)) {
                                 setZoom(zoom > 1 ? 1 : 2, canvasSize: proxy.size)
                             }
@@ -1115,6 +1212,7 @@ struct PhotoOneUpView: View {
             .clipped()
             .contentShape(Rectangle())
         }
+        .toolbar { if showsToolbar { viewerToolbar } }
         .focusable()
         .focused($focused)
         .onAppear { focused = true }
@@ -1138,50 +1236,52 @@ struct PhotoOneUpView: View {
         }
     }
 
-    private var viewerToolbar: some View {
-        ZStack {
+    @ToolbarContentBuilder
+    private var viewerToolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            HStack(spacing: 4) {
+                ViewerBackButton { store.closeViewer() }
+                    .keyboardShortcut(.escape, modifiers: [])
+                if let onToggleSidebar {
+                    ViewerToolbarButton(systemImage: "sidebar.left",
+                                        tooltip: sidebarVisible ? "Hide sidebar" : "Show sidebar",
+                                        isActive: sidebarVisible, action: onToggleSidebar)
+                }
+            }
+        }
+        ToolbarItem(placement: .principal) {
             if let photo = store.selectedPhoto {
                 VStack(spacing: 1) {
                     Text(photo.displayCapturedAt ?? photo.filename)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(theme.textPrimary)
                     if let position = store.selectedPositionLabel {
-                        Text(position)
-                            .font(.caption2)
-                            .foregroundStyle(theme.textSecondary)
+                        Text(position).font(.caption2).foregroundStyle(theme.textSecondary)
                     }
                 }
                 .lineLimit(1)
                 .frame(maxWidth: 320)
             }
-
-            HStack(spacing: 12) {
-                ViewerBackButton {
-                    store.closeViewer()
-                }
-
-                Spacer()
-
-                ViewerToolbarButton(
-                    systemImage: didCopyImage ? "checkmark" : "doc.on.doc",
-                    tooltip: didCopyImage ? "Copied" : "Copy Image"
-                ) {
-                    copySelectedImage()
-                }
-
-                ViewerToolbarButton(
-                    systemImage: store.viewerInfoVisible ? "info.circle.fill" : "info.circle",
-                    tooltip: store.viewerInfoVisible ? "Hide info" : "Show info"
-                ) {
-                    store.viewerInfoVisible.toggle()
+        }
+        ToolbarItemGroup(placement: .primaryAction) {
+            if store.selectedPhoto?.isVideo != true {
+            ViewerToolbarButton(systemImage: "rotate.right", tooltip: "Rotate Clockwise") {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                    rotationQuarterTurns += 1
+                    panOffset = .zero
                 }
             }
-            .padding(.leading, reservesWindowControls ? Layout.leadingAccessoryWidth + 108 : 14)
-            .padding(.trailing, Layout.trailingAccessoryWidth + 10)
+            ViewerToolbarButton(systemImage: didCopyImage ? "checkmark" : "doc.on.doc",
+                                tooltip: didCopyImage ? "Copied" : "Copy Image") {
+                copySelectedImage()
+            }
+            }
+            ViewerToolbarButton(systemImage: "sidebar.right",
+                                tooltip: infoVisible ? "Hide info" : "Show info",
+                                isActive: infoVisible) {
+                infoVisible.toggle()
+            }
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: 44)
-        .photoGlassSurface(radius: 0, tintOpacity: 0.12)
     }
 
     private func copySelectedImage() {
@@ -1204,20 +1304,33 @@ struct PhotoOneUpView: View {
         }
     }
 
+    @ViewBuilder
     private func viewerPhoto(_ photo: IndexedPhoto,
                              canvasSize: CGSize,
                              selected: Bool = false) -> some View {
+        let turns = selected ? rotationQuarterTurns : 0
+        let availableWidth = max(0, canvasSize.width - 48)
+        let availableHeight = max(0, canvasSize.height - 48)
+        if selected && photo.isVideo {
+            PhotoVideoView(photo: photo)
+                .id(photo.id)
+                .frame(width: canvasSize.width, height: canvasSize.height)
+        } else {
         PhotoThumbnailView(
-            path: FileManager.default.fileExists(atPath: photo.filePath)
+            path: !photo.isVideo && FileManager.default.fileExists(atPath: photo.filePath)
                 ? photo.filePath
                 : photo.thumbnailPath,
             contentMode: .fit,
-            maxPixelSize: 3200
+            maxPixelSize: 3200,
+            rotationDegrees: Double(turns * 90),
+            onDisplayed: selected ? { PhotoViewHistory.record(photo.id) } : nil
         )
+        .id(photo.id)
+        .frame(width: availableWidth, height: availableHeight)
         .scaleEffect(selected ? zoom : 1)
         .offset(selected ? panOffset : .zero)
-        .padding(24)
         .frame(width: canvasSize.width, height: canvasSize.height)
+        }
     }
 
     private func updatePaging(_ translation: CGFloat, canvasWidth: CGFloat) {
@@ -1295,6 +1408,7 @@ struct PhotoOneUpView: View {
 
     private func resetTransform() {
         zoom = 1
+        rotationQuarterTurns = 0
         magnificationBase = nil
         panOffset = .zero
         dragBase = nil
@@ -1311,38 +1425,28 @@ struct PhotoOneUpView: View {
     }
 }
 
-private struct ViewerBackButton: View {
-    @Environment(ThemeStore.self) private var theme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+struct ViewerBackButton: View {
+    var tooltip = "Back to photos (Esc)"
     let action: () -> Void
-
-    @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
-            Label("Back", systemImage: "chevron.left")
-                .font(.callout.weight(.medium))
-                .foregroundStyle(hovering ? theme.textPrimary : theme.textSecondary)
-                .padding(.horizontal, 10)
-                .frame(height: 30)
-                .background(
-                    hovering ? theme.hoverFill : .clear,
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            Image(systemName: "chevron.left")
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 28, height: 26)
         }
-        .buttonStyle(.plain)
-        .pointerStyle(.link)
-        .help("Back to photos (Esc)")
-        .onHover { hovering = $0 }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
+        .buttonStyle(HoverButtonStyle(horizontalPadding: 0, verticalPadding: 0))
+        .accessibilityLabel(tooltip)
+        .help(tooltip)
     }
 }
 
-private struct ViewerToolbarButton: View {
+struct ViewerToolbarButton: View {
     @Environment(ThemeStore.self) private var theme
+    @Environment(\.isEnabled) private var isEnabled
     let systemImage: String
     let tooltip: String
+    var isActive = false
     let action: () -> Void
 
     @State private var hovering = false
@@ -1351,13 +1455,14 @@ private struct ViewerToolbarButton: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(hovering ? theme.textPrimary : theme.textSecondary)
+                .foregroundStyle(isActive ? theme.accent : (hovering && isEnabled ? theme.textPrimary : theme.textSecondary))
                 .frame(width: 28, height: 26)
-                .background(hovering ? theme.hoverFill : .clear, in: RoundedRectangle(cornerRadius: 7))
+                .background(hovering && isEnabled ? theme.hoverFill : .clear, in: RoundedRectangle(cornerRadius: 7))
         }
         .buttonStyle(.plain)
         .pointerStyle(.link)
-        .help(tooltip)
+        .accessibilityLabel(String(localized: String.LocalizationValue(tooltip), bundle: .module))
+        .help(String(localized: String.LocalizationValue(tooltip), bundle: .module))
         .onHover { hovering = $0 }
     }
 }
@@ -1444,5 +1549,42 @@ private struct TagFlowLayout: SwiftUI.Layout {
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
         }
+    }
+}
+
+/// Coverage note above the results: why a search may be missing
+/// appearance-only matches, or that no sufficiently relevant match was found.
+/// Replaces the popover that used to hang off the removed control row.
+struct SearchCoverageNotice: View {
+    @Environment(ThemeStore.self) private var theme
+
+    let title: String?
+    let details: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(theme.textSecondary)
+                .frame(width: 16, height: 16)
+            VStack(alignment: .leading, spacing: 3) {
+                if let title {
+                    Text(title)
+                        .font(Typography.label)
+                        .foregroundStyle(theme.textPrimary)
+                }
+                Text(details)
+                    .font(Typography.caption)
+                    .foregroundStyle(theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.selectionFill.opacity(0.6), in: RoundedRectangle(cornerRadius: Radius.content))
+        .themedBorder(Radius.content)
+        .padding(.bottom, 6)
+        .accessibilityElement(children: .combine)
     }
 }

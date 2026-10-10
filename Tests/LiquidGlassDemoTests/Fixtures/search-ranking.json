@@ -1,0 +1,74 @@
+{
+  "cases": [
+    {
+      "id": "chinese-visual-synonym",
+      "query": "桥下休息",
+      "hybrid": true,
+      "assets": [
+        {"id": "scene", "caption": "高架水泥柱旁的骑行者", "similarity": 0.9},
+        {"id": "desk", "caption": "室内桌面", "similarity": 0.1}
+      ],
+      "expected": ["scene"]
+    },
+    {
+      "id": "literal-identifier",
+      "query": "ZXQ_TEST_ERROR",
+      "hybrid": true,
+      "assets": [
+        {"id": "correct", "caption": "ZXQ_TEST_ERROR connection failed", "similarity": 0.1},
+        {"id": "lookalike", "caption": "ERROR in an editor", "similarity": 0.95}
+      ],
+      "expected": ["correct"]
+    },
+    {
+      "id": "irrelevant-query",
+      "query": "月球表面弹钢琴的章鱼照片",
+      "hybrid": true,
+      "assets": [
+        {"id": "bike", "caption": "一张普通的照片，骑车的男子", "similarity": 0.2}
+      ],
+      "expected": []
+    },
+    {
+      "id": "video-threshold-and-spoken-text",
+      "query": "密码",
+      "hybrid": true,
+      "assets": [
+        {"id": "spoken", "caption": "讲解密码设置步骤", "type": "video", "similarity": 0.2},
+        {"id": "semantic", "caption": "登录认证界面", "type": "video", "similarity": 0.56},
+        {"id": "weak", "caption": "户外运动", "type": "video", "similarity": 0.54}
+      ],
+      "expected": ["spoken", "semantic"]
+    },
+    {
+      "id": "category-before-ranking",
+      "query": "headphones",
+      "section": "chatScreenshot",
+      "assets": [
+        {"id": "photo", "caption": "headphones", "type": "photo"},
+        {"id": "chat", "caption": "headphones discussion", "type": "chat_screenshot"}
+      ],
+      "expected": ["chat"]
+    },
+    {
+      "id": "stable-tie-order",
+      "query": "headphones",
+      "assets": [
+        {"id": "a", "caption": "headphones", "capturedAt": "2025-01-01T00:00:00Z"},
+        {"id": "z", "caption": "headphones", "capturedAt": "2025-01-01T00:00:00Z"},
+        {"id": "older", "caption": "headphones", "capturedAt": "2024-01-01T00:00:00Z"}
+      ],
+      "expected": ["z", "a", "older"]
+    },
+    {
+      "id": "visual-and-text-agreement",
+      "query": "桥下休息",
+      "hybrid": true,
+      "assets": [
+        {"id": "exact", "caption": "桥下休息的骑行者", "similarity": 0.6},
+        {"id": "similar", "caption": "高架水泥柱旁的骑行者", "similarity": 0.9}
+      ],
+      "expected": ["exact", "similar"]
+    }
+  ]
+}

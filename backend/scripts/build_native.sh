@@ -12,6 +12,7 @@ xcrun swiftc \
   -parse-as-library \
   "$project_dir/native/photo_export.swift" \
   -o "$app_dir/Contents/MacOS/photo-export" \
+  -framework AVFoundation \
   -framework AppKit \
   -framework Photos
 

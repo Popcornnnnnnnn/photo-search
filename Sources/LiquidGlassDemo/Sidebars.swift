@@ -23,79 +23,6 @@ struct SidebarTint: View {
     }
 }
 
-/// Full-height activation strip used when a sidebar is closed. It is visually
-/// absent at rest, then washes the complete window edge with a quiet shadow on
-/// hover so any vertical position can restore the panel.
-struct SidebarEdgeActivator: View {
-    @Environment(ThemeStore.self) private var theme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    let tooltip: String
-    let edge: HorizontalEdge
-    let action: () -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            ZStack(alignment: edge == .leading ? .leading : .trailing) {
-                edgeGlow
-                    .opacity(hovering ? 1 : 0)
-
-                Rectangle()
-                    .fill(theme.accent.opacity(hovering ? 0.34 : 0.10))
-                    .frame(width: Layout.hairline)
-
-                SidebarEdgeDirectionIndicator(
-                    systemImage: edge == .leading ? "chevron.right" : "chevron.left"
-                )
-                .opacity(hovering ? 1 : 0)
-            }
-            .frame(width: Layout.resizeHandleWidth)
-            .frame(maxHeight: .infinity)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .pointerStyle(.link)
-        .help(tooltip)
-        .accessibilityLabel(tooltip)
-        .onHover { hovering = $0 }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: hovering)
-    }
-
-    private var edgeGlow: some View {
-        ZStack {
-            Rectangle()
-                .fill(theme.panel.opacity(0.16))
-
-            Rectangle()
-                .fill(
-                    LinearGradient(
-                        colors: edge == .leading
-                            ? [theme.accent.opacity(0.12), theme.panel.opacity(0.08), .clear]
-                            : [.clear, theme.panel.opacity(0.08), theme.accent.opacity(0.12)],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
-        }
-        .shadow(color: .black.opacity(0.08), radius: 8)
-    }
-}
-
-private struct SidebarEdgeDirectionIndicator: View {
-    @Environment(ThemeStore.self) private var theme
-    let systemImage: String
-
-    var body: some View {
-        Image(systemName: systemImage)
-            .font(.system(size: 11, weight: .bold))
-            .foregroundStyle(theme.accent)
-            .frame(width: Layout.resizeHandleWidth, height: 36)
-            .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
-    }
-}
-
 /// Small uppercase-ish section label pinned at the top of a sidebar.
 private struct SidebarHeader: View {
     @Environment(ThemeStore.self) private var theme
@@ -159,7 +86,7 @@ struct SidebarThemes: View {
             )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(HoverButtonStyle(horizontalPadding: 0, verticalPadding: 0, cornerRadius: Radius.row))
         .focusEffectDisabled()
         .pointerStyle(.link)
         .accessibilityLabel(swatch.name)
@@ -220,7 +147,6 @@ struct ResizableColumnDivider: View {
     /// Which side the resized sidebar sits on, so a rightward drag grows the left
     /// sidebar but shrinks the right one.
     let edge: HorizontalEdge
-    var collapseAction: (() -> Void)? = nil
 
     @State private var hovering = false
     @State private var dragStartWidth: CGFloat?
@@ -259,34 +185,24 @@ struct ResizableColumnDivider: View {
                 .fill(active ? theme.accent : theme.divider)
                 .frame(width: Layout.hairline)
 
-            SidebarEdgeDirectionIndicator(
-                systemImage: edge == .leading ? "chevron.left" : "chevron.right"
-            )
-            .opacity(hovering ? 1 : 0)
         }
         .frame(width: Layout.resizeHandleWidth)
         .contentShape(Rectangle())
         .ignoresSafeArea(edges: .bottom)
         .pointerStyle(.columnResize)
-        .help(collapseAction == nil ? "Drag to resize" : "Drag to resize · Click to collapse")
+        .help("Drag to resize")
         .onHover { hovering = $0 }
         .gesture(
             // Measure in global space: the handle moves as the sidebar resizes,
             // so a local translation would feed back on itself and jitter.
-            DragGesture(minimumDistance: 0, coordinateSpace: .global)
+            DragGesture(minimumDistance: 3, coordinateSpace: .global)
                 .onChanged { value in
                     let start = dragStartWidth ?? width.wrappedValue
                     if dragStartWidth == nil { dragStartWidth = start }
                     let delta = edge == .leading ? value.translation.width : -value.translation.width
                     width.wrappedValue = UIState.clampSidebar(start + delta)
                 }
-                .onEnded { value in
-                    dragStartWidth = nil
-                    let distance = hypot(value.translation.width, value.translation.height)
-                    if distance < 3 {
-                        collapseAction?()
-                    }
-                }
+                .onEnded { _ in dragStartWidth = nil }
         )
         .animation(.easeInOut(duration: 0.12), value: active)
     }

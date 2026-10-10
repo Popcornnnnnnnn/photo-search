@@ -47,7 +47,7 @@ struct AboutView: View {
             Button("GitHub Repository") {
                 NSWorkspace.shared.open(AppInfo.repositoryURL)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(HoverButtonStyle())
             .font(Typography.caption)
             .foregroundStyle(theme.accent)
             .focusEffectDisabled()

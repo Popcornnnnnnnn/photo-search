@@ -27,6 +27,7 @@ class ModelProvider:
     json_mode: bool = True
     qwen_thinking_control: bool = False
     reprocess_existing: bool = False
+    reasoning_effort: str | None = None
 
     @property
     def api_key(self) -> str:
@@ -92,6 +93,7 @@ def _profile_from_json(value: dict[str, Any], reprocess_existing: bool) -> Model
         json_mode=bool(value.get("json_mode", True)),
         qwen_thinking_control=bool(value.get("qwen_thinking_control", False)),
         reprocess_existing=reprocess_existing,
+        reasoning_effort=value.get("reasoning_effort"),
     )
 
 
