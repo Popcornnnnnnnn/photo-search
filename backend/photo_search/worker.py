@@ -182,7 +182,12 @@ def run_full_library_worker() -> dict[str, Any]:
                     export_failed=int(result.get("failed", 0)),
                     regenerated_previews=int(result.get("regenerated", 0)),
                 )
-            provider = select_processing_provider(provider, load_fallback_provider(), state)
+            # Visual indexing is independent of annotation-provider availability.
+            if pending_embedding_count():
+                state.update(status="running", stage="embedding", message="Filling photo and video vectors for the pinned local encoder.")
+                write_worker_status(state)
+                run_embedding_batch()
+
             with Database() as db:
                 retry_before = (
                     datetime.now(timezone.utc) - timedelta(hours=SKIP_RETRY_HOURS)
@@ -194,6 +199,15 @@ def run_full_library_worker() -> dict[str, Any]:
                     provider,
                     source_kinds=PHOTO_SOURCE_KINDS,
                 )
+            if pending:
+                selected = select_processing_provider(provider, load_fallback_provider(), state)
+                if selected != provider:
+                    provider = selected
+                    # Fallback profiles can have a different reprocessing policy.
+                    with Database() as db:
+                        pending = pending_annotation_assets(
+                            db, provider, source_kinds=PHOTO_SOURCE_KINDS,
+                        )
             state.update(
                 pending=len(pending),
                 batch_size=WORKER_BATCH_SIZE,
@@ -204,11 +218,6 @@ def run_full_library_worker() -> dict[str, Any]:
                 **counts,
             )
             write_worker_status(state)
-
-            if pending_embedding_count():
-                state.update(status="running", stage="embedding", message="Filling photo and video vectors for the pinned local encoder.")
-                write_worker_status(state)
-                run_embedding_batch()
 
             visual = load_embedding_status()
             # Match the library denominator and refresh after every sync, even
