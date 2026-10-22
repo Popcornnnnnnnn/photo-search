@@ -100,6 +100,72 @@ import Testing
         #expect(request.cachePolicy == .reloadIgnoringLocalCacheData)
         #expect(request.timeoutInterval == ModelProviderSettings.connectionTimeout)
     }
+
+    @Test func chatGPTProbeUsesTheSelectedAccountsAuthorizedCatalog() async throws {
+        let session = session()
+        defer { session.invalidateAndCancel() }
+        let provider = ModelProviderProfile.chatGPT(accountID: "test-account", model: "selected-model")
+        let issue = try await PhotoConnectionService.check(index: { true }, provider: provider,
+            session: session, chatGPTModels: { accountID in
+                #expect(accountID == "test-account")
+                return [ChatGPTModel(id: "selected-model", name: "Selected model")]
+            })
+        #expect(issue == nil)
+    }
+
+    @Test func chatGPTProbeRequiresTheSelectedModelAndReportsAuthorizationFailure() async throws {
+        let session = session()
+        defer { session.invalidateAndCancel() }
+        let provider = ModelProviderProfile.chatGPT(accountID: "test-account", model: "selected-model")
+        let missingModel = try await PhotoConnectionService.check(index: { true }, provider: provider,
+            session: session, chatGPTModels: { _ in [ChatGPTModel(id: "other-model", name: "Other")] })
+        #expect(missingModel == .model("ChatGPT"))
+        let unauthorized = try await PhotoConnectionService.check(index: { true }, provider: provider,
+            session: session, chatGPTModels: { _ in throw URLError(.userAuthenticationRequired) })
+        #expect(unauthorized == .model("ChatGPT"))
+    }
+
+    @Test func chatGPTProbeRequiresAnAccountAndPreservesIndexErrorPriority() async throws {
+        let session = session()
+        defer { session.invalidateAndCancel() }
+        let provider = ModelProviderProfile.chatGPT(accountID: "", model: "selected-model")
+        for indexReadable in [true, false] {
+            let issue = try await PhotoConnectionService.check(index: { indexReadable }, provider: provider,
+                session: session, chatGPTModels: { _ in
+                    Issue.record("A missing account must not start a catalog request")
+                    return []
+                })
+            #expect(issue == (indexReadable ? .model("ChatGPT") : .index))
+        }
+        let signedIn = ModelProviderProfile.chatGPT(accountID: "test-account", model: "selected-model")
+        let issue = try await PhotoConnectionService.check(index: { false }, provider: signedIn,
+            session: session, chatGPTModels: { _ in throw URLError(.notConnectedToInternet) })
+        #expect(issue == .index)
+    }
+
+    @Test func cancelledChatGPTProbeDoesNotBecomeAnOutage() async throws {
+        let session = session()
+        defer { session.invalidateAndCancel() }
+        let provider = ModelProviderProfile.chatGPT(accountID: "test-account", model: "selected-model")
+        await #expect(throws: CancellationError.self) {
+            _ = try await PhotoConnectionService.check(index: { true }, provider: provider,
+                session: session, chatGPTModels: { _ in throw CancellationError() })
+        }
+    }
+
+    @Test func localProbeKeepsItsExistingEndpointAndNeverUsesChatGPT() async throws {
+        let session = session()
+        defer { session.invalidateAndCancel() }
+        var provider = ModelProviderProfile.localQwen27B
+        provider.baseURL = "https://connection-test.invalid"
+        provider.model = "selected-model"
+        let issue = try await PhotoConnectionService.check(index: { true }, provider: provider,
+            session: session, chatGPTModels: { _ in
+                Issue.record("Local providers must not use ChatGPT authorization")
+                return []
+            })
+        #expect(issue == nil)
+    }
 }
 
 private final class ConnectionTestProtocol: URLProtocol, @unchecked Sendable {

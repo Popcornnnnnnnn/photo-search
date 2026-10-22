@@ -205,12 +205,6 @@ def run_full_library_worker() -> dict[str, Any]:
             )
             write_worker_status(state)
 
-            if uses_lm_studio(provider):
-                state.update(status="running", stage="loading_model",
-                             message=f"Loading {provider.model} in LM Studio.")
-                write_worker_status(state)
-                ensure_local_model(provider)
-
             if pending_embedding_count():
                 state.update(status="running", stage="embedding", message="Filling photo and video vectors for the pinned local encoder.")
                 write_worker_status(state)
@@ -236,6 +230,12 @@ def run_full_library_worker() -> dict[str, Any]:
                 )
                 write_worker_status(state)
                 return state
+
+            if uses_lm_studio(provider):
+                state.update(status="running", stage="loading_model",
+                             message=f"Loading {provider.model} in LM Studio.")
+                write_worker_status(state)
+                ensure_local_model(provider)
 
             state.update(
                 status="running",
