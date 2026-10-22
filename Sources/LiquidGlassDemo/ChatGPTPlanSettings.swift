@@ -93,6 +93,21 @@ private final class ChatGPTCommand: @unchecked Sendable {
     }
 }
 
+enum ChatGPTModelCatalog {
+    /// Keep OAuth credentials and the plan-specific catalog format in the helper.
+    static func load(accountID: String) async throws -> [ChatGPTModel] {
+        let command = ChatGPTCommand()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            let event = try await command.run(["models", "--account", accountID], authorize: { _ in })
+            try Task.checkCancellation()
+            return event.models ?? []
+        } onCancel: {
+            command.cancel()
+        }
+    }
+}
+
 @Observable
 @MainActor
 final class ChatGPTPlanSettings {
