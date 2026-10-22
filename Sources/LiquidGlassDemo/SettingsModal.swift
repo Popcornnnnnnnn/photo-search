@@ -468,7 +468,7 @@ struct SettingsModal: View {
 
     private var modelsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if let active = providers.activeProvider {
+            if let active = providers.configuration.effectiveProvider(worker: indexActivity.snapshot) {
                 HStack(spacing: 12) {
                     Image(systemName: active.kind == .local ? "desktopcomputer" : "cloud")
                         .font(.system(size: 18, weight: .medium))
@@ -547,10 +547,16 @@ struct SettingsModal: View {
             }
             Spacer()
             if provider.id == providers.configuration.activeProviderID {
-                Label("Active", systemImage: "checkmark.circle.fill")
+                Label(providers.configuration.fallbackProviderID == nil ? "Active" : "Preferred",
+                      systemImage: "checkmark.circle.fill")
                     .font(Typography.control)
                     .foregroundStyle(theme.success)
             } else {
+                if provider.id == providers.configuration.fallbackProviderID {
+                    Text("Fallback")
+                        .font(Typography.footnote)
+                        .foregroundStyle(theme.textSecondary)
+                }
                 Button("Use") { activateProvider(provider) }
             }
             Button {

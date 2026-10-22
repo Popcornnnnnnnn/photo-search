@@ -57,15 +57,21 @@ Override it with `PHOTO_SEARCH_QWEN_URL` or change the model with `PHOTO_SEARCH_
 
 For a local Qwen 27B in LM Studio, choose **Settings → Models → Add Local
 Qwen 27B** in the native app. The preset uses `http://127.0.0.1:1234/v1` and
-`qwen/qwen3.8-27b`. Load that model and start LM Studio's local server first:
+`qwen3.8-27b-uncensored`. Install the vision model in LM Studio first, then add
+the provider and choose **Use**. The background worker starts the loopback
+server and loads that installed model automatically with a 16K context. It
+reports the loading stage and a specific error if the model is missing; it
+never downloads models or unloads other applications' models.
 
-```bash
-lms load qwen/qwen3.8-27b --identifier qwen/qwen3.8-27b --context-length 16384
-lms server start --port 1234 --bind 127.0.0.1
-```
+Choosing **Use** on Qwen 4090 makes it the preferred provider, with Local Qwen
+27B as a fallback when that profile exists. Each batch retries the preferred
+provider up to three times (20 seconds per probe) before falling back locally,
+and returns to the 4090 on a later batch when it responds again. Selecting
+Local Qwen 27B directly disables this preference. The Models page distinguishes
+the preferred provider, fallback and current active provider. **Check Again**
+also starts an idle worker without interrupting an active batch.
 
-Test the connection, add the provider, then choose **Use** to switch from the
-4090. The preset disables the Tailscale/SSH bridge and JSON Response Mode
+The local preset disables the Tailscale/SSH bridge and JSON Response Mode
 (LM Studio rejects `json_object`); prompts still request JSON. Local requests
 use LM Studio's `reasoning_effort: "none"` to disable thinking instead
 of vLLM's `chat_template_kwargs`. Existing photo

@@ -19,7 +19,8 @@ from .db import Database
 from .indexer import index_assets, pending_annotation_assets
 from .native import export_library_photos
 from .qwen import ModelProviderError, QwenClient
-from .providers import ModelProvider, load_provider
+from .providers import ModelProvider, load_provider, load_fallback_provider
+from .local_model import ensure_local_model, uses_lm_studio
 from .sources import import_photos_manifest
 from .embedding_worker import load_embedding_status, pending_embedding_count, run_embedding_batch
 from .embeddings import embedding_count
@@ -109,7 +110,9 @@ def _confirm_model_reachable(provider: ModelProvider, attempts: int = 3) -> None
     last_error: Exception | None = None
     for _ in range(attempts):
         try:
-            QwenClient(provider).models()
+            models = QwenClient(provider).models()
+            if not any(item.get("id") == provider.model for item in models.get("data", [])):
+                raise ModelProviderError(f"The provider does not offer the configured model {provider.model!r}.")
             return
         except Exception as error:
             last_error = error
@@ -122,6 +125,26 @@ def sync_due(state: dict[str, Any]) -> bool:
         return (datetime.now(timezone.utc) - last_sync).total_seconds() >= 300
     except (KeyError, TypeError, ValueError):
         return True
+
+
+def select_processing_provider(preferred: ModelProvider, fallback: ModelProvider | None,
+                               state: dict[str, Any]) -> ModelProvider:
+    state["requested_provider_id"] = preferred.id
+    state.pop("fallback_reason", None)
+    if fallback is None:
+        return preferred
+    # A fallback is explicitly configured and must stay on this Mac.
+    if not uses_lm_studio(fallback):
+        raise ValueError("The fallback provider must be a local LM Studio model.")
+    state.update(status="running", stage="checking_model",
+                 message=f"Checking preferred provider {preferred.name}.")
+    write_worker_status(state)
+    try:
+        _confirm_model_reachable(preferred)
+        return preferred
+    except ModelProviderError as error:
+        state["fallback_reason"] = str(error)
+        return fallback
 
 
 def run_full_library_worker() -> dict[str, Any]:
@@ -157,6 +180,7 @@ def run_full_library_worker() -> dict[str, Any]:
                     export_failed=int(result.get("failed", 0)),
                     regenerated_previews=int(result.get("regenerated", 0)),
                 )
+            provider = select_processing_provider(provider, load_fallback_provider(), state)
             with Database() as db:
                 retry_before = (
                     datetime.now(timezone.utc) - timedelta(hours=SKIP_RETRY_HOURS)
@@ -178,6 +202,12 @@ def run_full_library_worker() -> dict[str, Any]:
                 **counts,
             )
             write_worker_status(state)
+
+            if uses_lm_studio(provider):
+                state.update(status="running", stage="loading_model",
+                             message=f"Loading {provider.model} in LM Studio.")
+                write_worker_status(state)
+                ensure_local_model(provider)
 
             if pending_embedding_count():
                 state.update(status="running", stage="embedding", message="Filling photo and video vectors for the pinned local encoder.")
@@ -208,7 +238,7 @@ def run_full_library_worker() -> dict[str, Any]:
             state.update(
                 status="running",
                 stage="checking_model",
-                message="Checking the private Qwen service before indexing.",
+                message=f"Preparing {provider.name} before indexing.",
             )
             write_worker_status(state)
             _confirm_model_reachable(provider)

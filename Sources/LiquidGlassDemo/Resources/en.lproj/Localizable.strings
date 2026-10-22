@@ -80,3 +80,6 @@
 "Hide sidebar" = "Hide sidebar";
 "Show info" = "Show info";
 "Hide info" = "Hide info";
+"Loading the local model" = "Loading the local model";
+"Preferred" = "Preferred";
+"Fallback" = "Fallback";

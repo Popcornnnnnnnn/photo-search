@@ -48,7 +48,7 @@ struct ModelProviderProfile: Codable, Equatable, Identifiable {
         name: "Local Qwen 27B",
         kind: .local,
         baseURL: "http://127.0.0.1:1234/v1",
-        model: "qwen/qwen3.8-27b",
+        model: "qwen3.8-27b-uncensored",
         producer: "qwen-vlm-local",
         requiresTailscale: false,
         // LM Studio rejects response_format.type = json_object. The prompt
@@ -79,11 +79,23 @@ struct ModelProviderFile: Codable, Equatable {
     var activeProviderID: String
     var reprocessExisting: Bool
     var providers: [ModelProviderProfile]
+    var fallbackProviderID: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case version, providers
         case activeProviderID = "active_provider_id"
         case reprocessExisting = "reprocess_existing"
+        case fallbackProviderID = "fallback_provider_id"
+    }
+
+    func effectiveProvider(worker: PhotoWorkerStatus.Snapshot?) -> ModelProviderProfile? {
+        if let worker, [.indexing, .waiting, .complete, .completeWithErrors].contains(worker.activity),
+           worker.payload.requestedProviderId == activeProviderID,
+           worker.payload.providerId == fallbackProviderID, fallbackProviderID != nil,
+           let fallback = providers.first(where: { $0.id == fallbackProviderID }) {
+            return fallback
+        }
+        return providers.first { $0.id == activeProviderID }
     }
 
     static let `default` = ModelProviderFile(
@@ -164,6 +176,7 @@ final class ModelProviderSettings {
         guard var provider = draftProvider else { throw ProviderSettingsError.noProvider }
         try Self.validate(&provider)
         let wasActive = provider.id == configuration.activeProviderID
+            || provider.id == configuration.fallbackProviderID
         if let index = configuration.providers.firstIndex(where: { $0.id == provider.id }) {
             configuration.providers[index] = provider
         } else {
@@ -182,6 +195,8 @@ final class ModelProviderSettings {
 
     func activateProvider(_ provider: ModelProviderProfile) throws {
         configuration.activeProviderID = provider.id
+        configuration.fallbackProviderID = provider.id == ModelProviderProfile.qwen4090.id
+            ? configuration.providers.first { $0.id == ModelProviderProfile.localQwen27B.id }?.id : nil
         try persist(restartWorker: true)
         savedMessage = "Using \(provider.name)."
     }
@@ -192,6 +207,7 @@ final class ModelProviderSettings {
             throw ProviderSettingsError.cannotDeleteActive
         }
         configuration.providers.removeAll { $0.id == provider.id }
+        if configuration.fallbackProviderID == provider.id { configuration.fallbackProviderID = nil }
         Self.deleteAPIKey(providerID: provider.id)
         try persist(restartWorker: false)
         savedMessage = "Removed \(provider.name)."
@@ -313,10 +329,19 @@ final class ModelProviderSettings {
         SecItemDelete(keychainQuery(providerID: providerID) as CFDictionary)
     }
 
+    static func resumeWorker() {
+        startWorker(restart: false)
+    }
+
     private static func restartWorker() {
+        startWorker(restart: true)
+    }
+
+    private static func startWorker(restart: Bool) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = ["kickstart", "-k", "gui/\(getuid())/com.popcornnn.photo-search.worker"]
+        process.arguments = ["kickstart"] + (restart ? ["-k"] : [])
+            + ["gui/\(getuid())/com.popcornnn.photo-search.worker"]
         try? process.run()
     }
 }

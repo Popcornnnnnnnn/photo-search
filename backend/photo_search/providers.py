@@ -109,3 +109,16 @@ def load_provider(path: Path = PROVIDER_CONFIG_PATH) -> ModelProvider:
         if isinstance(profile, dict) and str(profile.get("id", "")) == active_id:
             return _profile_from_json(profile, bool(payload.get("reprocess_existing", False)))
     raise ValueError(f"active model provider {active_id!r} was not found")
+
+
+def load_fallback_provider(path: Path = PROVIDER_CONFIG_PATH) -> ModelProvider | None:
+    if not path.is_file():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    fallback_id = payload.get("fallback_provider_id")
+    if not fallback_id or fallback_id == payload.get("active_provider_id"):
+        return None
+    for profile in payload.get("providers", []):
+        if isinstance(profile, dict) and profile.get("id") == fallback_id:
+            return _profile_from_json(profile, bool(payload.get("reprocess_existing", False)))
+    raise ValueError(f"fallback model provider {fallback_id!r} was not found")

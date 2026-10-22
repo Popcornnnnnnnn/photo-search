@@ -39,6 +39,18 @@ import Testing
         #expect(issue == .index)
     }
 
+    @Test func aHealthyServerMustOfferTheSelectedModel() async throws {
+        let session = session()
+        defer { session.invalidateAndCancel() }
+        for (path, expected): (String, PhotoConnectionIssue?) in [
+            ("models", nil), ("ok", .model("Local test"))
+        ] {
+            let issue = try await PhotoConnectionService.check(index: { true }, model: request(path),
+                providerName: "Local test", session: session, modelID: "selected-model")
+            #expect(issue == expected)
+        }
+    }
+
     @MainActor
     @Test func recoveryClearsTheNoticeAndCancellationDoesNotInventAnOutage() async {
         var calls = 0
@@ -103,7 +115,8 @@ private final class ConnectionTestProtocol: URLProtocol, @unchecked Sendable {
         let response = HTTPURLResponse(url: url, statusCode: url.path == "/unauthorized" ? 401 : 200,
                                        httpVersion: nil, headerFields: nil)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data("{}".utf8))
+        let body = url.path == "/models" ? "{\"data\":[{\"id\":\"selected-model\"}]}" : "{}"
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
 

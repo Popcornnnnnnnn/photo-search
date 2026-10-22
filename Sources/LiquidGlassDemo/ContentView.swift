@@ -90,6 +90,7 @@ struct ContentView: View {
             .overlay(alignment: .bottom) {
                 if let issue = connection.issue {
                     PhotoConnectionNotice(issue: issue, isChecking: connection.isChecking) {
+                        ModelProviderSettings.resumeWorker()
                         Task { await connection.refresh() }
                     } onSettings: {
                         ui.showSettings = true

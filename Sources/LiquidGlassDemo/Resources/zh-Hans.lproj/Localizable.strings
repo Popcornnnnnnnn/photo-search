@@ -44,3 +44,6 @@
 "Hide sidebar" = "折叠侧边栏";
 "Show info" = "展开详细信息";
 "Hide info" = "折叠详细信息";
+"Loading the local model" = "正在加载本地模型";
+"Preferred" = "优先";
+"Fallback" = "备用";
