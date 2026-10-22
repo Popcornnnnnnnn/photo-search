@@ -58,6 +58,7 @@ def parser() -> argparse.ArgumentParser:
     embedding.add_argument("--limit", type=int, default=100)
 
     commands.add_parser("encoder-serve", help="Serve query vectors to the app over stdio")
+    commands.add_parser("chatgpt", help="Connect a ChatGPT plan account and test image understanding")
     commands.add_parser("stats", help="Show index counts")
     commands.add_parser("worker-run", help="Resume the unattended full-library worker")
     commands.add_parser("worker-status", help="Show unattended worker progress")
@@ -90,6 +91,10 @@ def print_results(payload: dict) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    arguments = sys.argv[1:] if argv is None else argv
+    if arguments and arguments[0] == "chatgpt":
+        from .chatgpt_auth import command
+        return command(arguments[1:])
     args = parser().parse_args(argv)
     try:
         if args.command == "build-native":

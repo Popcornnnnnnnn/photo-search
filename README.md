@@ -50,6 +50,19 @@ The App's **Settings → Models** page manages local and cloud
 OpenAI-compatible providers. Endpoint and model configuration is stored in the
 private runtime directory; API keys are stored in macOS Keychain.
 
+**Settings → Models → ChatGPT Plan** optionally connects your own ChatGPT account
+through OpenAI's Sign in with ChatGPT flow. Install the backend extra first:
+`backend/.venv/bin/pip install -e 'backend[chatgpt]'`. Credentials stay in protected
+app runtime storage, separate from Codex. Choose an account/model and use **Test
+Image** to verify one synthetic image with your plan before saving the model.
+Signing in or saving does not activate cloud fallback or reprocess the library.
+With the 4090 preferred, **Fallback** can select local Qwen or the saved ChatGPT
+provider. ChatGPT fallback sends new images to OpenAI and consumes plan allowance;
+there is no automatic API-key billing fallback. Usage or authorization errors pause
+processing. The worker checks the preferred 4090 again on later batches.
+
+Official integration: https://developers.openai.com/siwc/token-sharing-open-source
+
 See [backend/README.md](backend/README.md) for CLI and indexing details.
 
 The app searches the shared SQLite index directly and runs no loopback service.

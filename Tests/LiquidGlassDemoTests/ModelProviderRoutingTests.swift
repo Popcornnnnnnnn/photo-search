@@ -3,6 +3,21 @@ import Testing
 @testable import LiquidGlassDemo
 
 @Suite struct ModelProviderRoutingTests {
+    @Test func chatGPTProfileRoundTripsWithoutCredentialsAndReportsEffectiveFallback() throws {
+        let profile = ModelProviderProfile.chatGPT(accountID: "oaiapp_test", model: "account-model")
+        var config = ModelProviderFile.default
+        config.providers.append(profile)
+        config.fallbackProviderID = profile.id
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(ModelProviderFile.self, from: data)
+        #expect(decoded.activeProviderID == ModelProviderProfile.qwen4090.id)
+        #expect(decoded.providers.last?.chatgptAccountID == "oaiapp_test")
+        #expect(!String(decoding: data, as: UTF8.self).contains("access_token"))
+        let status = PhotoWorkerStatus.Snapshot(
+            payload: .init(status: "running", requestedProviderId: config.activeProviderID, providerId: profile.id),
+            activity: .indexing, updated: Date())
+        #expect(decoded.effectiveProvider(worker: status)?.kind == .chatgpt)
+    }
     @Test func pythonStatusFieldsDecodeIntoTheEffectiveProvider() throws {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase

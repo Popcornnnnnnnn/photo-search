@@ -28,9 +28,12 @@ class ModelProvider:
     qwen_thinking_control: bool = False
     reprocess_existing: bool = False
     reasoning_effort: str | None = None
+    chatgpt_account_id: str | None = None
 
     @property
     def api_key(self) -> str:
+        if self.kind == "chatgpt":
+            return ""  # OAuth grants never use API-key billing or environment overrides.
         override = os.environ.get("PHOTO_SEARCH_API_KEY", "").strip()
         if override:
             return override
@@ -94,6 +97,7 @@ def _profile_from_json(value: dict[str, Any], reprocess_existing: bool) -> Model
         qwen_thinking_control=bool(value.get("qwen_thinking_control", False)),
         reprocess_existing=reprocess_existing,
         reasoning_effort=value.get("reasoning_effort"),
+        chatgpt_account_id=value.get("chatgpt_account_id"),
     )
 
 

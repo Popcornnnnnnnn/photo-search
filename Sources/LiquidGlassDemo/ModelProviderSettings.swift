@@ -5,9 +5,10 @@ import Darwin
 enum ModelProviderKind: String, Codable, CaseIterable, Identifiable {
     case local
     case cloud
+    case chatgpt
 
     var id: String { rawValue }
-    var title: String { rawValue.capitalized }
+    var title: String { self == .chatgpt ? "ChatGPT" : rawValue.capitalized }
 }
 
 struct ModelProviderProfile: Codable, Equatable, Identifiable {
@@ -21,6 +22,7 @@ struct ModelProviderProfile: Codable, Equatable, Identifiable {
     var jsonMode: Bool
     var qwenThinkingControl: Bool
     var reasoningEffort: String? = nil
+    var chatgptAccountID: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, name, kind, model, producer
@@ -29,6 +31,7 @@ struct ModelProviderProfile: Codable, Equatable, Identifiable {
         case jsonMode = "json_mode"
         case qwenThinkingControl = "qwen_thinking_control"
         case reasoningEffort = "reasoning_effort"
+        case chatgptAccountID = "chatgpt_account_id"
     }
 
     static let qwen4090 = ModelProviderProfile(
@@ -71,6 +74,13 @@ struct ModelProviderProfile: Codable, Equatable, Identifiable {
             jsonMode: true,
             qwenThinkingControl: false
         )
+    }
+
+    static func chatGPT(accountID: String, model: String) -> ModelProviderProfile {
+        ModelProviderProfile(id: "chatgpt-plan", name: "ChatGPT", kind: .chatgpt,
+                             baseURL: "https://api.openai.com/v1", model: model,
+                             producer: "chatgpt-plan", requiresTailscale: false,
+                             jsonMode: false, qwenThinkingControl: false, chatgptAccountID: accountID)
     }
 }
 
@@ -195,10 +205,33 @@ final class ModelProviderSettings {
 
     func activateProvider(_ provider: ModelProviderProfile) throws {
         configuration.activeProviderID = provider.id
-        configuration.fallbackProviderID = provider.id == ModelProviderProfile.qwen4090.id
-            ? configuration.providers.first { $0.id == ModelProviderProfile.localQwen27B.id }?.id : nil
+        if provider.id != ModelProviderProfile.qwen4090.id {
+            configuration.fallbackProviderID = nil
+        } else if configuration.fallbackProviderID == nil {
+            configuration.fallbackProviderID = configuration.providers.first { $0.id == ModelProviderProfile.localQwen27B.id }?.id
+        }
         try persist(restartWorker: true)
         savedMessage = "Using \(provider.name)."
+    }
+
+    /// Saving a login/model never changes the primary or enables cloud uploads.
+    func saveChatGPT(accountID: String, model: String) throws {
+        let profile = ModelProviderProfile.chatGPT(accountID: accountID, model: model)
+        if let index = configuration.providers.firstIndex(where: { $0.id == profile.id }) {
+            configuration.providers[index] = profile
+        } else {
+            configuration.providers.append(profile)
+        }
+        try persist(restartWorker: false)
+    }
+
+    func selectFallback(_ id: String?) throws {
+        guard id == nil || configuration.providers.contains(where: { $0.id == id && $0.id != configuration.activeProviderID }) else {
+            throw ProviderSettingsError.noProvider
+        }
+        configuration.fallbackProviderID = id
+        try persist(restartWorker: false)
+        Self.resumeWorker()
     }
 
     func deleteDraftProvider() throws {

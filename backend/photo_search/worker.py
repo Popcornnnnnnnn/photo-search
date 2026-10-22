@@ -133,9 +133,9 @@ def select_processing_provider(preferred: ModelProvider, fallback: ModelProvider
     state.pop("fallback_reason", None)
     if fallback is None:
         return preferred
-    # A fallback is explicitly configured and must stay on this Mac.
-    if not uses_lm_studio(fallback):
-        raise ValueError("The fallback provider must be a local LM Studio model.")
+    # A remote fallback is allowed only through the explicit app-owned ChatGPT grant.
+    if not uses_lm_studio(fallback) and fallback.kind != "chatgpt":
+        raise ValueError("The fallback provider must be local LM Studio or a connected ChatGPT account.")
     state.update(status="running", stage="checking_model",
                  message=f"Checking preferred provider {preferred.name}.")
     write_worker_status(state)
@@ -144,6 +144,8 @@ def select_processing_provider(preferred: ModelProvider, fallback: ModelProvider
         return preferred
     except ModelProviderError as error:
         state["fallback_reason"] = str(error)
+        if fallback.kind == "chatgpt":
+            _confirm_model_reachable(fallback, attempts=1)
         return fallback
 
 
