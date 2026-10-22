@@ -67,6 +67,7 @@ struct SettingsModal: View {
     // real SMAppService status, including changes made in System Settings.
     @State private var launchAtLogin = LaunchAtLogin()
     @State private var providers = ModelProviderSettings()
+    @State private var chatGPT = ChatGPTPlanSettings()
     @State private var hoveredSection: SettingsSection?
 
     var body: some View {
@@ -468,7 +469,7 @@ struct SettingsModal: View {
 
     private var modelsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if let active = providers.activeProvider {
+            if let active = providers.configuration.effectiveProvider(worker: indexActivity.snapshot) {
                 HStack(spacing: 12) {
                     Image(systemName: active.kind == .local ? "desktopcomputer" : "cloud")
                         .font(.system(size: 18, weight: .medium))
@@ -528,7 +529,87 @@ struct SettingsModal: View {
                         .foregroundStyle(theme.textSecondary)
                 }
             }
+            chatGPTSection
+                .task { await chatGPT.load(profile: providers.configuration.providers.first { $0.kind == .chatgpt }) }
         }
+    }
+
+    private var chatGPTSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("ChatGPT Plan", bundle: L10n.bundle).font(Typography.label)
+                Spacer()
+                if chatGPT.busy {
+                    ProgressView().controlSize(.small)
+                    Button(String(localized: "Cancel", bundle: L10n.bundle)) { chatGPT.cancel() }
+                } else {
+                    Button(String(localized: "Continue with ChatGPT", bundle: L10n.bundle)) { Task { await chatGPT.signIn() } }
+                    if !chatGPT.accounts.isEmpty {
+                        Button(String(localized: "Add Account", bundle: L10n.bundle)) { Task { await chatGPT.signIn(newAccount: true) } }
+                    }
+                    if chatGPT.account?.signedIn == true {
+                        Button(String(localized: "Sign Out", bundle: L10n.bundle)) { Task { await chatGPT.signOut() } }
+                    }
+                }
+            }
+            if !chatGPT.accounts.isEmpty {
+                Picker(String(localized: "Account", bundle: L10n.bundle), selection: $chatGPT.selectedAccountID) {
+                    ForEach(chatGPT.accounts) { account in
+                        Text("\(account.label) · \(account.id.suffix(6))").tag(account.id)
+                    }
+                }
+                .onChange(of: chatGPT.selectedAccountID) { _, _ in
+                    if !chatGPT.busy { Task { await chatGPT.changeAccount() } }
+                }
+                .disabled(chatGPT.busy)
+                if chatGPT.account?.planEnabled == true {
+                    Picker(String(localized: "Model", bundle: L10n.bundle), selection: $chatGPT.selectedModelID) {
+                        ForEach(chatGPT.models) { model in Text(model.name).tag(model.id) }
+                    }
+                    .disabled(chatGPT.busy)
+                    .onChange(of: chatGPT.selectedModelID) { _, _ in chatGPT.imageTestPassed = false }
+                    HStack {
+                        Button(String(localized: "Test Image", bundle: L10n.bundle)) { Task { await chatGPT.testImage() } }
+                            .disabled(chatGPT.busy || !chatGPT.canUsePlan)
+                        Button(String(localized: "Save Model", bundle: L10n.bundle)) {
+                            do { try providers.saveChatGPT(accountID: chatGPT.selectedAccountID, model: chatGPT.selectedModelID) }
+                            catch { chatGPT.message = error.localizedDescription }
+                        }
+                        .disabled(chatGPT.busy || !chatGPT.canUsePlan || !chatGPT.imageTestPassed)
+                        Spacer()
+                    }
+                } else {
+                    Text("Sign in and grant ChatGPT plan usage to enable image understanding.", bundle: L10n.bundle)
+                        .font(Typography.footnote)
+                }
+            }
+            if !chatGPT.message.isEmpty {
+                Text(chatGPT.message).font(Typography.footnote).textSelection(.enabled)
+            }
+            if providers.configuration.activeProviderID == ModelProviderProfile.qwen4090.id {
+                Picker(String(localized: "Fallback", bundle: L10n.bundle), selection: Binding(
+                    get: { providers.configuration.fallbackProviderID ?? "" },
+                    set: { value in
+                        do { try providers.selectFallback(value.isEmpty ? nil : value) }
+                        catch { chatGPT.message = error.localizedDescription }
+                    }
+                )) {
+                    Text("None", bundle: L10n.bundle).tag("")
+                    ForEach(providers.configuration.providers.filter {
+                        $0.id == ModelProviderProfile.localQwen27B.id || $0.kind == .chatgpt
+                    }) { profile in Text(profile.name).tag(profile.id) }
+                }
+            }
+            Text("Test Image sends one synthetic image. Selecting ChatGPT as fallback sends new photos to OpenAI when the 4090 is unavailable and uses your ChatGPT plan allowance.", bundle: L10n.bundle)
+                .font(Typography.footnote)
+                .foregroundStyle(theme.textSecondary)
+            Link(String(localized: "Manage ChatGPT Usage", bundle: L10n.bundle), destination: URL(string: "https://chatgpt.com/#settings/Usage")!)
+                .font(Typography.footnote)
+        }
+        .buttonStyle(HoverButtonStyle())
+        .padding(12)
+        .background(theme.background.opacity(0.32), in: RoundedRectangle(cornerRadius: Radius.field))
+        .themedBorder(Radius.field)
     }
 
     private func providerListRow(_ provider: ModelProviderProfile) -> some View {
@@ -547,19 +628,27 @@ struct SettingsModal: View {
             }
             Spacer()
             if provider.id == providers.configuration.activeProviderID {
-                Label("Active", systemImage: "checkmark.circle.fill")
+                Label(providers.configuration.fallbackProviderID == nil ? "Active" : "Preferred",
+                      systemImage: "checkmark.circle.fill")
                     .font(Typography.control)
                     .foregroundStyle(theme.success)
             } else {
+                if provider.id == providers.configuration.fallbackProviderID {
+                    Text("Fallback")
+                        .font(Typography.footnote)
+                        .foregroundStyle(theme.textSecondary)
+                }
                 Button("Use") { activateProvider(provider) }
             }
-            Button {
-                providers.beginEditingProvider(provider)
-            } label: {
-                Image(systemName: "slider.horizontal.3")
+            if provider.kind != .chatgpt {
+                Button {
+                    providers.beginEditingProvider(provider)
+                } label: {
+                    Image(systemName: "slider.horizontal.3")
+                }
+                .buttonStyle(.borderless)
+                .help("Edit \(provider.name)")
             }
-            .buttonStyle(.borderless)
-            .help("Edit \(provider.name)")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -589,7 +678,7 @@ struct SettingsModal: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Type").font(Typography.label).foregroundStyle(theme.textPrimary)
                     Picker("Type", selection: draftBinding(\.kind)) {
-                        ForEach(ModelProviderKind.allCases) { kind in Text(kind.title).tag(kind) }
+                        ForEach(ModelProviderKind.allCases.filter { $0 != .chatgpt }) { kind in Text(kind.title).tag(kind) }
                     }
                     .labelsHidden()
                     .frame(maxWidth: .infinity)

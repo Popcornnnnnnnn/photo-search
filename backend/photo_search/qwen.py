@@ -85,6 +85,13 @@ class QwenClient:
         return result
 
     def models(self) -> dict[str, Any]:
+        if self.provider.kind == "chatgpt":
+            from .chatgpt_client import ChatGPTClient
+            from .chatgpt_auth import ChatGPTError
+            try:
+                return ChatGPTClient(self.provider).models()
+            except ChatGPTError as error:
+                raise ModelProviderError(str(error)) from None
         try:
             headers: dict[str, str] = {}
             if self.provider.api_key:
@@ -116,6 +123,16 @@ class QwenClient:
                                       VIDEO_SYSTEM_PROMPT)
 
     def _annotate_content(self, content: list[dict], system: str):
+        if self.provider.kind == "chatgpt":
+            from .chatgpt_client import ChatGPTClient
+            from .chatgpt_auth import ChatGPTError
+            try:
+                text = ChatGPTClient(self.provider).complete(system, content)
+                return extract_json(text), text
+            except ChatGPTError as error:
+                # Account/plan/transport failures must pause the batch, never
+                # mark an image permanently skipped after repeated quota errors.
+                raise ModelProviderError(f"ChatGPT provider unavailable: {error}") from None
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [
@@ -139,6 +156,11 @@ class QwenClient:
         return extract_json(content), content
 
     def expand_query(self, query: str) -> dict[str, Any]:
+        if self.provider.kind == "chatgpt":
+            parsed, _ = self._annotate_content([{"type": "text", "text": query_user_prompt(query)}], QUERY_SYSTEM_PROMPT)
+            if not isinstance(parsed.get("terms"), list):
+                parsed["terms"] = []
+            return parsed
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [

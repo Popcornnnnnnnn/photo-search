@@ -44,3 +44,25 @@
 "Hide sidebar" = "折叠侧边栏";
 "Show info" = "展开详细信息";
 "Hide info" = "折叠详细信息";
+"Loading the local model" = "正在加载本地模型";
+"Preferred" = "优先";
+"Fallback" = "备用";
+
+"Account" = "账号";
+"Add Account" = "添加账号";
+"ChatGPT Plan" = "ChatGPT 套餐";
+"Continue with ChatGPT" = "使用 ChatGPT 登录";
+"Manage ChatGPT Usage" = "管理 ChatGPT 用量";
+"Model" = "模型";
+"None" = "无";
+"Save Model" = "保存模型";
+"Sign Out" = "退出登录";
+"Sign in and grant ChatGPT plan usage to enable image understanding." = "登录并授权使用 ChatGPT 套餐以启用图片理解。";
+"Test Image" = "测试图片";
+"Test Image sends one synthetic image. Selecting ChatGPT as fallback sends new photos to OpenAI when the 4090 is unavailable and uses your ChatGPT plan allowance." = "测试图片仅发送一张合成图。将 ChatGPT 选为备用后，4090 不可用时会把新照片发送给 OpenAI，并消耗你的 ChatGPT 套餐额度。";
+
+"Signed in. ChatGPT plan usage was not authorized." = "已登录，但未授权使用 ChatGPT 套餐。";
+"Test image recognized using your ChatGPT plan." = "已使用你的 ChatGPT 套餐成功识别测试图片。";
+"Image test did not complete." = "图片测试未完成。";
+"Signed out." = "已退出登录。";
+"Signed out locally. Disconnect Photo Search in ChatGPT settings to confirm revocation." = "已在本地退出。请在 ChatGPT 设置中断开 Photo Search，以确认撤销授权。";

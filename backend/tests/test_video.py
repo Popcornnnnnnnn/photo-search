@@ -19,6 +19,11 @@ class VideoTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
+        # These tests simulate decoding/transcription via run_local mocks. Tool
+        # discovery must also be isolated from the developer machine's installs.
+        tools = patch("photo_search.video.local_tool", side_effect=lambda name: str(self.root / name))
+        tools.start()
+        self.addCleanup(tools.stop)
         self.db = Database(self.root / "index.sqlite3")
         self.assets = self.root / "assets"
         self.assets.mkdir()

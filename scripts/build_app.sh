@@ -48,8 +48,25 @@ rm -rf "$APP"
 mkdir -p "$MACOS" "$RES" "$FW"
 
 # 1. Release binary.
-swift build -c release --product "$EXECUTABLE"
-BIN_DIR="$(swift build -c release --show-bin-path)"
+SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
+SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
+# Swift Build can stamp the deployment target as the SDK version. AppKit then
+# renders compatibility-era window controls even when compiled with a new SDK.
+# Keep minimum OS support separate from the SDK used for native system styling.
+swift build -c release --sdk "$SDK_PATH" --product "$EXECUTABLE" \
+  -Xlinker -platform_version -Xlinker macos -Xlinker "$MIN_OS" -Xlinker "$SDK_VERSION"
+BIN_DIR="$(swift build -c release --sdk "$SDK_PATH" --show-bin-path)"
+BUILD_INFO="$(xcrun vtool -show-build "$BIN_DIR/$EXECUTABLE")"
+BUILT_SDK="$(awk '$1 == "sdk" {print $2; exit}' <<< "$BUILD_INFO")"
+BUILT_MIN_OS="$(awk '$1 == "minos" {print $2; exit}' <<< "$BUILD_INFO")"
+version_key() { awk -F. '{printf "%d.%d.%d", $1, $2, $3}' <<< "$1"; }
+if [[ -z "$BUILT_SDK" || -z "$BUILT_MIN_OS" \
+   || "$(version_key "$BUILT_SDK")" != "$(version_key "$SDK_VERSION")" \
+   || "$(version_key "$BUILT_MIN_OS")" != "$(version_key "$MIN_OS")" ]]; then
+  echo "Incorrect Mach-O build versions: SDK $BUILT_SDK (expected $SDK_VERSION), minimum OS $BUILT_MIN_OS (expected $MIN_OS)." >&2
+  exit 1
+fi
+echo "==> Verified native build: SDK $BUILT_SDK, minimum macOS $BUILT_MIN_OS"
 cp "$BIN_DIR/$EXECUTABLE" "$MACOS/$EXECUTABLE"
 
 # 1b. SwiftPM resource bundle (the compiled string catalog backing L10n).

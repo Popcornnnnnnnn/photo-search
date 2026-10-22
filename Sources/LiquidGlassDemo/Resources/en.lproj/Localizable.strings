@@ -80,3 +80,25 @@
 "Hide sidebar" = "Hide sidebar";
 "Show info" = "Show info";
 "Hide info" = "Hide info";
+"Loading the local model" = "Loading the local model";
+"Preferred" = "Preferred";
+"Fallback" = "Fallback";
+
+"Account" = "Account";
+"Add Account" = "Add Account";
+"ChatGPT Plan" = "ChatGPT Plan";
+"Continue with ChatGPT" = "Continue with ChatGPT";
+"Manage ChatGPT Usage" = "Manage ChatGPT Usage";
+"Model" = "Model";
+"None" = "None";
+"Save Model" = "Save Model";
+"Sign Out" = "Sign Out";
+"Sign in and grant ChatGPT plan usage to enable image understanding." = "Sign in and grant ChatGPT plan usage to enable image understanding.";
+"Test Image" = "Test Image";
+"Test Image sends one synthetic image. Selecting ChatGPT as fallback sends new photos to OpenAI when the 4090 is unavailable and uses your ChatGPT plan allowance." = "Test Image sends one synthetic image. Selecting ChatGPT as fallback sends new photos to OpenAI when the 4090 is unavailable and uses your ChatGPT plan allowance.";
+
+"Signed in. ChatGPT plan usage was not authorized." = "Signed in. ChatGPT plan usage was not authorized.";
+"Test image recognized using your ChatGPT plan." = "Test image recognized using your ChatGPT plan.";
+"Image test did not complete." = "Image test did not complete.";
+"Signed out." = "Signed out.";
+"Signed out locally. Disconnect Photo Search in ChatGPT settings to confirm revocation." = "Signed out locally. Disconnect Photo Search in ChatGPT settings to confirm revocation.";

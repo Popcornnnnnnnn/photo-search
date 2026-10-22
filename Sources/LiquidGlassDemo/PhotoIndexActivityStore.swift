@@ -67,6 +67,9 @@ enum PhotoWorkerStatus {
         var embeddingError: String?
         var libraryVideos: Int?
         var videosAnnotated: Int?
+        var requestedProviderId: String?
+        var providerId: String?
+        var fallbackReason: String?
 
         var needsPhotosAccess: Bool {
             lastError?.contains("Photos access was not granted") == true
@@ -78,6 +81,7 @@ enum PhotoWorkerStatus {
             case "syncing": "Checking Photos for changes"
             case "importing": "Updating changed previews"
             case "checking_model": "Checking the model connection"
+            case "loading_model": String(localized: "Loading the local model", bundle: .module)
             case "indexing": "Reading photos and videos"
             case "embedding": "Building the visual index"
             case "complete": "Everything is indexed"

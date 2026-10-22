@@ -90,6 +90,7 @@ struct ContentView: View {
             .overlay(alignment: .bottom) {
                 if let issue = connection.issue {
                     PhotoConnectionNotice(issue: issue, isChecking: connection.isChecking) {
+                        ModelProviderSettings.resumeWorker()
                         Task { await connection.refresh() }
                     } onSettings: {
                         ui.showSettings = true
@@ -172,15 +173,24 @@ struct ContentView: View {
                     }.disabled(ui.showSettings)
                 }
             }
-            ToolbarItem(placement: .principal) {
-                if hasEnteredSearch {
+            if hasEnteredSearch {
+                ToolbarItem(placement: .principal) {
                     PhotoSearchBar(store: store, history: searchHistory, encoder: encoder,
                                    thumbnailContentMode: $thumbnailContentMode) {
                         if pendingLibraryJump == nil { returnToLanding() }
                     }
                     .frame(minWidth: 300, idealWidth: 520, maxWidth: 660)
                     .disabled(ui.showSettings)
-                } else {
+                }
+            } else if #available(macOS 26.0, *) {
+                ToolbarItem(placement: .principal) {
+                    Text("Photo Search").font(.headline)
+                }
+                // Informational titles are not toolbar actions. The current
+                // SDK otherwise gives this custom item a button-like backing.
+                .sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .principal) {
                     Text("Photo Search").font(.headline)
                 }
             }

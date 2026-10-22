@@ -60,11 +60,13 @@ class EmbeddingCountTests(unittest.TestCase):
         self.add_asset("local", source="file")
         self.db.reconcile_photos({"remaining"})
         state = {"status": "complete", "library_images": 1, "embedded": 3}
-        provider = SimpleNamespace(id="test", name="Test", model="test")
+        provider = SimpleNamespace(id="test", name="Test", model="test", kind="cloud",
+                                   base_url="https://provider.invalid/v1", requires_tailscale=False)
         with patch("photo_search.worker.ensure_app_dirs"), \
              patch("photo_search.worker.LOCK_PATH", self.root / "worker.lock"), \
              patch("photo_search.worker.load_worker_status", return_value=state), \
              patch("photo_search.worker.load_provider", return_value=provider), \
+             patch("photo_search.worker.load_fallback_provider", return_value=None), \
              patch("photo_search.worker.start_heartbeat", return_value=lambda: None), \
              patch("photo_search.worker.sync_due", return_value=False), \
              patch("photo_search.worker.Database", side_effect=lambda: Database(self.path)), \
