@@ -174,13 +174,17 @@ struct ContentView: View {
                 }
             }
             if hasEnteredSearch {
-                ToolbarItem(placement: .principal) {
-                    PhotoSearchBar(store: store, history: searchHistory, encoder: encoder,
-                                   thumbnailContentMode: $thumbnailContentMode) {
-                        if pendingLibraryJump == nil { returnToLanding() }
+                if #available(macOS 26.0, *) {
+                    ToolbarItem(placement: .principal) {
+                        librarySearchBar
                     }
-                    .frame(minWidth: 300, idealWidth: 520, maxWidth: 660)
-                    .disabled(ui.showSettings)
+                    // These controls supply their own surfaces. A shared system
+                    // capsule would wrap the field and segmented picker again.
+                    .sharedBackgroundVisibility(.hidden)
+                } else {
+                    ToolbarItem(placement: .principal) {
+                        librarySearchBar
+                    }
                 }
             } else if #available(macOS 26.0, *) {
                 ToolbarItem(placement: .principal) {
@@ -207,6 +211,16 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private var librarySearchBar: some View {
+        PhotoSearchBar(store: store, history: searchHistory, encoder: encoder,
+                       thumbnailContentMode: $thumbnailContentMode) {
+            if pendingLibraryJump == nil { returnToLanding() }
+        }
+        // Leave room for the field beside the date filter and view picker.
+        .frame(minWidth: 380, idealWidth: 460, maxWidth: 520)
+        .disabled(ui.showSettings)
     }
 
     private var appContent: some View {
