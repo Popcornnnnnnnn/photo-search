@@ -242,10 +242,9 @@ struct PhotoSearchBar: View {
                 } label: {
                     Image(systemName: "arrow.up")
                         .font(.system(size: 12, weight: .medium))
-                        .frame(width: 20, height: 20)
+                        .frame(width: 24, height: 24)
                 }
-                .buttonStyle(HoverButtonStyle(horizontalPadding: 3, verticalPadding: 3,
-                                              cornerRadius: Radius.control))
+                .buttonStyle(ToolbarButtonStyle())
                 .disabled(store.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .help(String(localized: "Search · Return", bundle: .module))
                 .accessibilityLabel(String(localized: "Search", bundle: .module))
@@ -267,22 +266,18 @@ struct PhotoSearchBar: View {
             }
             .padding(.horizontal, 13)
             .frame(height: Layout.toolbarControlHeight)
-            .modifier(SearchGlassSurface(active: focused, hovering: hovering))
+            .background(theme.panel, in: RoundedRectangle(cornerRadius: Radius.field))
             .overlay {
-                Capsule()
+                RoundedRectangle(cornerRadius: Radius.field)
                     .strokeBorder(
                         focused
                             ? theme.accent.opacity(0.55)
-                            : theme.textPrimary.opacity(hovering ? 0.11 : 0.06),
+                            : theme.textPrimary.opacity(hovering ? 0.18 : 0.09),
                         lineWidth: 1
                     )
+                    .allowsHitTesting(false)
             }
-            .shadow(
-                color: focused ? theme.accent.opacity(0.10) : .black.opacity(hovering ? 0.06 : 0.035),
-                radius: focused ? 9 : (hovering ? 6 : 4),
-                y: 1
-            )
-            .contentShape(Capsule())
+            .contentShape(RoundedRectangle(cornerRadius: Radius.field))
             .onTapGesture { focused = true }
             .onHover { hovering = $0 }
 
@@ -362,7 +357,7 @@ private struct PhotoImageSizingPicker: View {
                 }
                 .contentShape(RoundedRectangle(cornerRadius: 6))
         }
-        .buttonStyle(HoverButtonStyle(horizontalPadding: 0, verticalPadding: 0, cornerRadius: 6))
+        .buttonStyle(ToolbarButtonStyle(cornerRadius: 6))
         .pointerStyle(.link)
         .help(help)
         // The Label text already supplies the accessible name. An explicit
@@ -1425,27 +1420,22 @@ struct ViewerBackButton: View {
 
 struct ViewerToolbarButton: View {
     @Environment(ThemeStore.self) private var theme
-    @Environment(\.isEnabled) private var isEnabled
     let systemImage: String
     let tooltip: String
     var isActive = false
     let action: () -> Void
 
-    @State private var hovering = false
-
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(isActive ? theme.accent : (hovering && isEnabled ? theme.textPrimary : theme.textSecondary))
-                .frame(width: 28, height: 26)
-                .background(hovering && isEnabled ? theme.hoverFill : .clear, in: RoundedRectangle(cornerRadius: 7))
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(isActive ? theme.accent : theme.textSecondary)
+                .frame(width: Layout.toolbarControlHeight, height: Layout.toolbarControlHeight)
         }
-        .buttonStyle(.plain)
-        .pointerStyle(.link)
+        .buttonStyle(ToolbarButtonStyle(isSelected: isActive))
         .accessibilityLabel(String(localized: String.LocalizationValue(tooltip), bundle: .module))
+        .accessibilityAddTraits(isActive ? .isSelected : [])
         .help(String(localized: String.LocalizationValue(tooltip), bundle: .module))
-        .onHover { hovering = $0 }
     }
 }
 

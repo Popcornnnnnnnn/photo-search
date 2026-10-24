@@ -173,6 +173,7 @@ struct ContentView: View {
                     }.disabled(ui.showSettings)
                 }
             }
+            .customToolbarSurface()
             if hasEnteredSearch {
                 if #available(macOS 26.0, *) {
                     ToolbarItem(placement: .principal) {
@@ -210,6 +211,7 @@ struct ContentView: View {
                     }.disabled(ui.showSettings)
                 }
             }
+            .customToolbarSurface()
         }
     }
 

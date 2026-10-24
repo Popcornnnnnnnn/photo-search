@@ -10,9 +10,9 @@ struct PhotoDateFilterButton: View {
             Image(systemName: selection == .all ? "calendar" : "calendar.badge.checkmark")
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(selection == .all ? theme.textSecondary : theme.accent)
-                .frame(width: 20, height: 20)
+                .frame(width: Layout.toolbarControlHeight, height: Layout.toolbarControlHeight)
         }
-        .buttonStyle(HoverButtonStyle(horizontalPadding: 5, verticalPadding: 5))
+        .buttonStyle(ToolbarButtonStyle(isSelected: selection != .all || isPresented))
         .help(selection.title)
         .accessibilityLabel(String(localized: "Date range", bundle: .module))
         .accessibilityValue(selection.title)
