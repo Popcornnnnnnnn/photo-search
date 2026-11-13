@@ -196,8 +196,7 @@ struct IndexedPhoto: Identifiable, Hashable, Sendable {
 
     var displayCapturedAt: String? {
         guard let capturedAt else { return nil }
-        let formatter = ISO8601DateFormatter()
-        guard let date = formatter.date(from: capturedAt) else { return capturedAt }
+        guard let date = PhotoWorkerStatus.parseTimestamp(capturedAt) else { return capturedAt }
         return date.formatted(date: .abbreviated, time: .shortened)
     }
 }

@@ -95,14 +95,17 @@ struct PhotoReviewView: View {
                 ViewerBackButton(tooltip: "Back to Library (Esc)", action: onClose)
                     .keyboardShortcut(.escape, modifiers: [])
             }
+            .customToolbarSurface()
             ToolbarItem(placement: .principal) {
                 Text("Review photos").font(.headline)
             }
+            .customToolbarSurface()
             ToolbarItem(placement: .primaryAction) {
                 ViewerToolbarButton(systemImage: "arrow.clockwise", tooltip: "Refresh suggestions") {
                     Task { await refresh() }
                 }.disabled(store.isLoading)
             }
+            .customToolbarSurface()
         }
     }
 

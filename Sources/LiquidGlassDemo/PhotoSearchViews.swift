@@ -1196,6 +1196,7 @@ struct PhotoOneUpView: View {
         }
         .toolbar { if showsToolbar { viewerToolbar } }
         .focusable()
+        .focusEffectDisabled()
         .focused($focused)
         .onAppear { focused = true }
         .onChange(of: store.selectedID) { _, _ in
@@ -1231,6 +1232,7 @@ struct PhotoOneUpView: View {
                 }
             }
         }
+        .customToolbarSurface()
         ToolbarItem(placement: .principal) {
             if let photo = store.selectedPhoto {
                 VStack(spacing: 1) {
@@ -1245,6 +1247,7 @@ struct PhotoOneUpView: View {
                 .frame(maxWidth: 320)
             }
         }
+        .customToolbarSurface()
         ToolbarItemGroup(placement: .primaryAction) {
             ViewerToolbarButton(systemImage: "arrow.up.forward.app", tooltip: String(localized: "Open in Photos", bundle: .module)) {
                 if let photo = store.selectedPhoto { PhotoOriginal.open(assetID: photo.id, errors: errors) }
@@ -1267,6 +1270,7 @@ struct PhotoOneUpView: View {
                 infoVisible.toggle()
             }
         }
+        .customToolbarSurface()
     }
 
     private func copySelectedImage() {
@@ -1411,6 +1415,7 @@ struct PhotoOneUpView: View {
 }
 
 struct ViewerBackButton: View {
+    @Environment(ThemeStore.self) private var theme
     var tooltip = "Back to photos (Esc)"
     let action: () -> Void
 
@@ -1418,9 +1423,10 @@ struct ViewerBackButton: View {
         Button(action: action) {
             Image(systemName: "chevron.left")
                 .font(.system(size: 13, weight: .semibold))
-                .frame(width: 28, height: 26)
+                .foregroundStyle(theme.textSecondary)
+                .frame(width: Layout.toolbarControlHeight, height: Layout.toolbarControlHeight)
         }
-        .buttonStyle(HoverButtonStyle(horizontalPadding: 0, verticalPadding: 0))
+        .buttonStyle(ToolbarButtonStyle())
         .accessibilityLabel(tooltip)
         .help(tooltip)
     }
