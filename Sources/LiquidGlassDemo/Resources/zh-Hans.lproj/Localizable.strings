@@ -66,3 +66,10 @@
 "Image test did not complete." = "图片测试未完成。";
 "Signed out." = "已退出登录。";
 "Signed out locally. Disconnect Photo Search in ChatGPT settings to confirm revocation." = "已在本地退出。请在 ChatGPT 设置中断开 Photo Search，以确认撤销授权。";
+
+"Open in Photos" = "在照片中打开";
+"Review in Photos" = "在照片中查看";
+"Review in Photos later" = "稍后在照片中查看";
+"Loading video from Photos…" = "正在从照片载入视频…";
+"Video unavailable in Photos" = "照片中的视频不可用";
+"Check Photos access and your connection, then try again." = "请检查照片访问权限和网络连接，然后重试。";

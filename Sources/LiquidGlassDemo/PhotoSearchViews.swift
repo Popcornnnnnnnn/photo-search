@@ -824,6 +824,7 @@ struct PhotoGrid: View {
 
 struct PhotoInspector: View {
     @Environment(ThemeStore.self) private var theme
+    @Environment(ErrorStore.self) private var errors
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let store: PhotoSearchStore
     var showsThumbnail = true
@@ -835,6 +836,10 @@ struct PhotoInspector: View {
         if let photo = store.selectedPhoto {
             ScrollableContent {
                 VStack(alignment: .leading, spacing: 16) {
+                    Button(String(localized: "Open in Photos", bundle: .module), systemImage: "arrow.up.forward.app") {
+                        PhotoOriginal.open(assetID: photo.id, errors: errors)
+                    }
+                    .buttonStyle(HoverButtonStyle())
                     if showsThumbnail {
                         PhotoThumbnailView(path: photo.thumbnailPath, contentMode: .fit)
                             .frame(maxWidth: .infinity)
@@ -1241,6 +1246,9 @@ struct PhotoOneUpView: View {
             }
         }
         ToolbarItemGroup(placement: .primaryAction) {
+            ViewerToolbarButton(systemImage: "arrow.up.forward.app", tooltip: String(localized: "Open in Photos", bundle: .module)) {
+                if let photo = store.selectedPhoto { PhotoOriginal.open(assetID: photo.id, errors: errors) }
+            }.disabled(store.selectedPhoto == nil)
             if store.selectedPhoto?.isVideo != true {
             ViewerToolbarButton(systemImage: "rotate.right", tooltip: "Rotate Clockwise") {
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {

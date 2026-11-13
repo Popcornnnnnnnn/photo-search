@@ -51,28 +51,37 @@ def import_photos_manifest(
                      or ids | failed != present or ids & failed):
         raise ValueError("Incomplete Photos inventory; refusing deletion reconciliation")
     for record in records:
-        source = Path(record["path"])
         is_video = record.get("media_type") == "video"
-        # Keep one video copy in the exporter cache; only previews go into assets/.
-        destination = source if is_video else ASSET_DIR / source.name
-        thumbnail_source = Path(record.get("thumbnail_path") or record["path"])
-        thumbnail = ASSET_DIR / thumbnail_source.name if is_video else destination
-        if is_video and thumbnail_source.resolve() != thumbnail.resolve():
-            if not thumbnail.is_file() or thumbnail.stat().st_mtime_ns != thumbnail_source.stat().st_mtime_ns:
-                temporary = thumbnail.with_suffix(".tmp")
-                shutil.copy2(thumbnail_source, temporary)
-                temporary.replace(thumbnail)
+        # The export cache is already private and durable. Index its one preview
+        # directly rather than copying every preview a second time.
+        source = Path(record.get("thumbnail_path") or record["path"]) if is_video else Path(record["path"])
+        destination = source
+        thumbnail = source
         previous = db.get_asset(record["id"])
         old_metadata = json.loads(previous["metadata_json"]) if previous else {}
         stat = source.stat()
         unchanged = bool(previous and destination.is_file() and previous["file_path"] == str(destination)
                          and old_metadata.get("preview_mtime_ns") == stat.st_mtime_ns
                          and old_metadata.get("preview_size") == stat.st_size)
-        if not unchanged and source.resolve() != destination.resolve():
-            temporary = destination.with_suffix(".tmp")
-            shutil.copy2(source, temporary)
-            temporary.replace(destination)
-        digest = previous["sha256"] if unchanged else sha256_file(destination)
+        if is_video:
+            # A cover alone cannot identify a video edit (the audio may change).
+            # Preserve old content hashes for an unchanged Photos version so its
+            # existing annotations and vectors remain valid during migration.
+            same_video = bool(previous and old_metadata.get("media_type") == "video"
+                              and previous["source_identifier"] == record["local_identifier"]
+                              and record.get("modified_at") is not None
+                              and old_metadata.get("source_modified_at") == record.get("modified_at")
+                              and previous["width"] == record.get("width")
+                              and previous["height"] == record.get("height")
+                              and old_metadata.get("duration_seconds") == record.get("duration"))
+            version = [record["local_identifier"], record.get("modified_at"), record.get("width"),
+                       record.get("height"), record.get("duration")]
+            digest = (previous["sha256"] if same_video else
+                      hashlib.sha256(json.dumps(version, separators=(",", ":")).encode()).hexdigest())
+        else:
+            # Rehash during migration from the old assets/ path, preserving the
+            # digest and derived data if the source preview is identical.
+            digest = previous["sha256"] if unchanged else sha256_file(source)
         metadata = {
             "favorite": record.get("favorite", False),
             "media_subtypes": record.get("media_subtypes", 0),

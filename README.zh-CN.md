@@ -16,7 +16,7 @@
 - `backend/`：PhotoKit 导出、Apple Vision OCR、模型标注、SQLite 索引、本地图片/文字向量、混合检索和后台服务。
 - `~/Library/Application Support/PhotoSearch/`：私有运行数据、预览图、模型服务配置、任务状态和日志。
 
-搜索、索引和浏览通过公开 API 读取 Apple Photos。**Review photos** 仅在你标记照片并明确确认后，通过 PhotoKit 删除选中项目；搜索和索引不会删除照片。所有派生产物都会记录模型、Prompt、Schema、预处理版本和输入哈希，便于后续比较和重新生成。
+Apple Photos 是原始资料的唯一来源。Photo Search 只读取照片库，不修改或删除其中的项目。使用 **Open in Photos** 在照片应用中管理原片；Review 中的标记只是本地提醒。索引为每个已索引的版本保留一份预览，播放视频时从 Photos 读取，索引视频时仅使用临时副本。迁移不会自动删除旧缓存。
 
 ## 构建应用
 

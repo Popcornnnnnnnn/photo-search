@@ -1,4 +1,5 @@
 import json
+import shutil
 import sqlite3
 import tempfile
 import unittest
@@ -77,6 +78,25 @@ class SyncTests(unittest.TestCase):
              patch("photo_search.sources.shutil.copy2", side_effect=AssertionError("unchanged preview copied")):
             self.ingest([record])
         self.assertEqual(len(self.db.active_embeddings("test")), 1)
+
+    def test_legacy_duplicate_migrates_to_one_preview_without_losing_index(self):
+        record = self.record()
+        self.ingest([record])
+        original_hash = self.enrich()
+        duplicate = self.assets / "preview.jpg"
+        shutil.copy2(record["path"], duplicate)
+        with self.db.conn:
+            self.db.conn.execute("UPDATE assets SET file_path=?, thumbnail_path=? WHERE id='photo'",
+                                 (str(duplicate), str(duplicate)))
+        with patch("photo_search.sources.shutil.copy2", side_effect=AssertionError("preview copied again")):
+            self.ingest([record])
+        asset = self.db.get_asset("photo")
+        self.assertEqual(asset["file_path"], record["path"])
+        self.assertEqual(asset["thumbnail_path"], record["path"])
+        self.assertEqual(asset["sha256"], original_hash)
+        self.assertEqual(len(self.db.search_docs()), 1)
+        self.assertEqual(len(self.db.active_embeddings("test")), 1)
+        self.assertTrue(duplicate.exists())  # Migration does not delete existing files.
 
     def test_full_snapshot_hides_deleted_assets_and_restore_recovers_them(self):
         record = self.record()

@@ -290,7 +290,7 @@ struct ContentView: View {
                                 onClose: { photoReviewPresented = false }, onLocate: { photo in
                     photoReviewPresented = false
                     locateInLibrary(photo)
-                }, onDeleted: { store.reload(showLoading: false, encoder: encoder) })
+                })
                 .zIndex(3)
             }
 

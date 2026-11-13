@@ -102,3 +102,10 @@
 "Image test did not complete." = "Image test did not complete.";
 "Signed out." = "Signed out.";
 "Signed out locally. Disconnect Photo Search in ChatGPT settings to confirm revocation." = "Signed out locally. Disconnect Photo Search in ChatGPT settings to confirm revocation.";
+
+"Open in Photos" = "Open in Photos";
+"Review in Photos" = "Review in Photos";
+"Review in Photos later" = "Review in Photos later";
+"Loading video from Photos…" = "Loading video from Photos…";
+"Video unavailable in Photos" = "Video unavailable in Photos";
+"Check Photos access and your connection, then try again." = "Check Photos access and your connection, then try again.";

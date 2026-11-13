@@ -8,7 +8,7 @@ A private, local-first pilot for searching a personal Apple Photos library with:
 - a private Qwen endpoint for versioned structured annotations
 - SQLite for durable metadata, artifacts, future embeddings, and search documents
 
-Backend ingestion and indexing never modify the Photos library. The native app has a separate, explicitly confirmed Review photos deletion flow through PhotoKit. The pilot exports 1600-pixel JPEG previews into its private runtime directory and keeps every derived artifact versioned by model, prompt, schema, preprocessing version, and input hash.
+Photo Search reads but never modifies the Photos library. Open an item in Photos to edit or delete it. The exporter keeps one 1600-pixel JPEG preview in its private runtime directory and keeps derived artifacts versioned by model, prompt, schema, preprocessing version, and input hash.
 
 ## Boundaries of v0.1
 
@@ -99,7 +99,7 @@ general library when needed):
 macOS must grant **Full Access** to `Photo Search Exporter`. The helper exports
 previews only and never writes to the Photos library.
 
-macOS may ask whether the local process can automate Photos. The pilot uses Photos' public export command and never modifies the library. Exported originals remain in the private runtime import cache; 1600-pixel JPEG previews are used for OCR, Qwen, and the result grid.
+macOS may ask whether Photo Search can control Photos when opening an original. The optional selection import uses Photos’ export command and retains those exported files; the normal full-library sync keeps only 1600-pixel JPEG previews for OCR, annotations, and the result grid.
 
 Search in the terminal:
 
@@ -269,7 +269,7 @@ provider changes unless **Reprocess Existing Photos** is enabled.
 
 The full-library PhotoKit sync includes photos and videos. Each video produces one
 search result: a cover image, duration, and a whole-video description. The viewer
-plays the exported current version with native controls. Video indexing and playback never write to Apple Photos.
+plays the current Photos version through PhotoKit. Video indexing and playback never write to Apple Photos.
 
 Before indexing videos on a new Mac:
 
@@ -299,10 +299,20 @@ Video vectors become eligible after annotation and are invalidated when the sour
 video or its annotation changes. Search merges both contracts and returns one result
 per asset. Image-only random browsing and photo review exclude videos.
 
-The exporter retains one current video copy in its import cache and copies only its
-JPEG cover to `assets/`. Its normal five-minute sync discovers video edits and
-removals; only a complete authorized mixed-media inventory reconciles videos.
+The full-library exporter retains one JPEG preview per version in its import
+cache. Video indexing exports the current version into a private temporary folder
+and removes it after processing; playback uses PhotoKit directly. Existing
+legacy copies are not automatically removed. Its normal five-minute sync discovers
+video edits and removals; only a complete authorized mixed-media inventory reconciles videos.
 Legacy photo-only inventories cannot mark videos as deleted.
+
+After upgrading and completing a full sync, check legacy duplicate previews with
+`PYTHONPATH=backend python -m photo_search.cleanup_previews` from the repository
+root. The optional `--trash` moves only unreferenced previews whose copies in
+the full-library import folder match byte for byte. It takes the worker and
+index locks, preserves the other copy, and leaves a restore note in Trash. It
+does not remove old videos or files from Apple Photos. Space is reclaimed when
+Trash is emptied.
 
 Scheduled runs never display a Photos consent dialog. If macOS requires renewed
 access after rebuilding the exporter, open **Settings → Indexing → Allow Photos

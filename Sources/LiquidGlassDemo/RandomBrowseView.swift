@@ -3,6 +3,7 @@ import SwiftUI
 
 struct RandomBrowseView: View {
     @Environment(ThemeStore.self) private var theme
+    @Environment(ErrorStore.self) private var errors
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let store: RandomBrowseStore
     let onClose: () -> Void
@@ -120,6 +121,9 @@ struct RandomBrowseView: View {
             Text("Browse randomly").font(.headline)
         }
         ToolbarItemGroup(placement: .primaryAction) {
+            ViewerToolbarButton(systemImage: "arrow.up.forward.app", tooltip: String(localized: "Open in Photos", bundle: .module)) {
+                if let photo = store.currentPhoto { PhotoOriginal.open(assetID: photo.id, errors: errors) }
+            }.disabled(store.currentPhoto == nil)
             ViewerToolbarButton(systemImage: "rotate.right", tooltip: "Rotate Clockwise") {
                 withAnimation(motionReduced ? nil : .easeInOut(duration: 0.2)) {
                     rotationQuarterTurns += 1

@@ -6,7 +6,7 @@
 # a hardened-runtime code signature.
 #
 # Usage:
-#   scripts/build_app.sh [--version X.Y.Z] [--build N]
+#   scripts/build_app.sh [--version X.Y.Z] [--build N] [--scratch]
 #
 # Without a configured Developer ID it emits an UNSIGNED bundle — fine for local
 # testing, not for distribution. See RELEASE.md for the full pipeline.
@@ -28,13 +28,20 @@ URL_SCHEME="$(yaml_get url_scheme)"
 
 VERSION="1.0.0"
 BUILD="1"
+SCRATCH=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) VERSION="$2"; shift 2 ;;
     --build)   BUILD="$2";   shift 2 ;;
+    --scratch) SCRATCH=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+if [[ "$SCRATCH" != 1 && -n "$(git status --porcelain)" ]]; then
+  echo "A release build requires a clean committed tree. Use --scratch for a test build." >&2
+  exit 1
+fi
 
 DIST="${PHOTO_SEARCH_DIST_DIR:-dist}"
 APP="$DIST/$APP_NAME.app"
@@ -133,7 +140,8 @@ cat > "$CONTENTS/Info.plist" <<PLIST
     <key>LSMinimumSystemVersion</key><string>$MIN_OS</string>
     <key>LSApplicationCategoryType</key><string>$CATEGORY</string>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSPhotoLibraryUsageDescription</key><string>Photo Search needs access to delete photos you explicitly choose in Review photos.</string>
+    <key>NSPhotoLibraryUsageDescription</key><string>Photo Search reads your library to play videos from Photos.</string>
+    <key>NSAppleEventsUsageDescription</key><string>Photo Search opens the selected item in Photos so you can manage it there.</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
 $URL_KEYS
 $SPARKLE_KEYS
@@ -159,8 +167,8 @@ else
     [[ -e "$item" ]] && codesign -f -o runtime --timestamp -s "$DEV_ID" "$item"
   done
   codesign -f -o runtime --timestamp -s "$DEV_ID" "$FW/Sparkle.framework"
-  codesign -f -o runtime --timestamp -s "$DEV_ID" "$MACOS/$EXECUTABLE"
-  codesign -f -o runtime --timestamp -s "$DEV_ID" "$APP"
+  codesign -f -o runtime --timestamp --entitlements scripts/PhotoSearch.entitlements -s "$DEV_ID" "$MACOS/$EXECUTABLE"
+  codesign -f -o runtime --timestamp --entitlements scripts/PhotoSearch.entitlements -s "$DEV_ID" "$APP"
   codesign --verify --deep --strict --verbose=2 "$APP"
 fi
 
