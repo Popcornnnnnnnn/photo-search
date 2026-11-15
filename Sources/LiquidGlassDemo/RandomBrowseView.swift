@@ -3,6 +3,7 @@ import SwiftUI
 
 struct RandomBrowseView: View {
     @Environment(ThemeStore.self) private var theme
+    @Environment(ErrorStore.self) private var errors
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let store: RandomBrowseStore
     let onClose: () -> Void
@@ -88,6 +89,7 @@ struct RandomBrowseView: View {
         }
         .toolbar { browseToolbar }
         .focusable()
+        .focusEffectDisabled()
         .focused($focused)
         .onAppear { focused = true }
         .onChange(of: store.currentID) { _, id in
@@ -116,10 +118,15 @@ struct RandomBrowseView: View {
             ViewerBackButton(tooltip: "Back to Library (Esc)", action: onClose)
                 .keyboardShortcut(.escape, modifiers: [])
         }
+        .customToolbarSurface()
         ToolbarItem(placement: .principal) {
             Text("Browse randomly").font(.headline)
         }
+        .customToolbarSurface()
         ToolbarItemGroup(placement: .primaryAction) {
+            ViewerToolbarButton(systemImage: "arrow.up.forward.app", tooltip: String(localized: "Open in Photos", bundle: .module)) {
+                if let photo = store.currentPhoto { PhotoOriginal.open(assetID: photo.id, errors: errors) }
+            }.disabled(store.currentPhoto == nil)
             ViewerToolbarButton(systemImage: "rotate.right", tooltip: "Rotate Clockwise") {
                 withAnimation(motionReduced ? nil : .easeInOut(duration: 0.2)) {
                     rotationQuarterTurns += 1
@@ -132,6 +139,7 @@ struct RandomBrowseView: View {
                 didCopyImage = NSPasteboard.general.writeObjects([image])
             }.disabled(store.currentImage == nil)
         }
+        .customToolbarSurface()
     }
 
     private func photo(_ image: NSImage, size: CGSize, turns: Int = 0) -> some View {

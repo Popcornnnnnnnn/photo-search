@@ -8,11 +8,11 @@ struct PhotoDateFilterButton: View {
     var body: some View {
         Button { isPresented.toggle() } label: {
             Image(systemName: selection == .all ? "calendar" : "calendar.badge.checkmark")
-                .font(.system(size: 16, weight: .medium))
+                .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(selection == .all ? theme.textSecondary : theme.accent)
-                .frame(width: 22, height: 22)
+                .frame(width: Layout.toolbarControlHeight, height: Layout.toolbarControlHeight)
         }
-        .buttonStyle(HoverButtonStyle(horizontalPadding: 8, verticalPadding: 8))
+        .buttonStyle(ToolbarButtonStyle(isSelected: selection != .all || isPresented))
         .help(selection.title)
         .accessibilityLabel(String(localized: "Date range", bundle: .module))
         .accessibilityValue(selection.title)

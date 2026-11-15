@@ -19,10 +19,15 @@ This is the single repository for both parts of the product:
 - `~/Library/Application Support/PhotoSearch/`: private runtime data, previews,
   model-provider configuration, worker state, and logs.
 
-Search, indexing, and browsing read Apple Photos through public APIs. **Review
-photos** can delete only the items you mark and explicitly confirm, through
-PhotoKit; a search or indexing run never deletes library items. Derived artifacts are versioned by model, prompt, schema,
-preprocessing version, and input hash.
+Apple Photos is the source of truth. Photo Search reads its library and never
+edits or deletes library items. Use **Open in Photos** from the inspector,
+viewer, random browsing, or review to manage an original in Photos. Review
+marks are local reminders, not changes to the library.
+
+The index stores one private JPEG preview per indexed version. Video playback
+reads from Photos, and video indexing exports a temporary copy that is removed
+after processing. Search annotations and vectors remain local. Existing files
+from the old storage layout are not automatically deleted during migration.
 
 ## Build the app
 

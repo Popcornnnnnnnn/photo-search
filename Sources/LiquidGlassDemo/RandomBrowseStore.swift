@@ -148,7 +148,9 @@ final class RandomBrowseStore {
                            d.asset_type, d.short_caption
                     FROM assets AS a
                     LEFT JOIN search_docs AS d ON d.asset_id = a.id
-                    WHERE a.is_available = 1 AND COALESCE(d.asset_type, 'other') != 'video' AND LOWER(a.file_path) NOT LIKE '%.mov'
+                    WHERE a.is_available = 1 AND COALESCE(d.asset_type, 'other') != 'video'
+                      AND COALESCE(json_extract(a.metadata_json, '$.media_type'), 'image') != 'video'
+                      AND LOWER(a.file_path) NOT LIKE '%.mov'
                     """)
                 let photos = rows.compactMap { row -> RandomBrowsePhoto? in
                         let original: String = row["file_path"]

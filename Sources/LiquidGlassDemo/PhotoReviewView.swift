@@ -2,15 +2,14 @@ import SwiftUI
 
 struct PhotoReviewView: View {
     @Environment(ThemeStore.self) private var theme
+    @Environment(ErrorStore.self) private var errors
     @State private var store = PhotoReviewStore()
     @State private var viewer = PhotoSearchStore()
-    @State private var pendingDeletion: [PhotoReviewCandidate]?
     let encoder: PhotoEncoderStore
     let thumbnailContentMode: ContentMode
     let inspectorWidth: CGFloat
     let onClose: () -> Void
     let onLocate: (RandomBrowsePhoto) -> Void
-    let onDeleted: () -> Void
 
     var body: some View {
         HStack(spacing: 0) {
@@ -51,32 +50,7 @@ struct PhotoReviewView: View {
         }
         .foregroundStyle(theme.textPrimary)
         .background(theme.background)
-        .disabled(store.isDeleting)
         .toolbar { reviewToolbar }
-        .alert(deletionTitle, isPresented: Binding(
-            get: { pendingDeletion != nil },
-            set: { if !$0 { pendingDeletion = nil } }
-        ), presenting: pendingDeletion) { candidates in
-            Button(candidates.count == 1 ? "Delete Photo" : "Delete \(candidates.count) Photos", role: .destructive) {
-                Task {
-                    if await store.delete(candidates) {
-                        synchronizeViewer()
-                        onDeleted()
-                    }
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: { candidates in
-            Text("\(candidates.count == 1 ? candidates[0].photo.filename : "Only these \(candidates.count) marked photos will be deleted. Kept photos are excluded.")\n\nThis deletes the selected originals from your Photos library. With iCloud Photos, it is also deleted from synced devices. You can normally recover it in Photos → Recently Deleted for 30 days.")
-        }
-        .alert("Photo deletion", isPresented: Binding(
-            get: { store.deletionMessage != nil },
-            set: { if !$0 { store.deletionMessage = nil } }
-        )) {
-            Button("OK", role: .cancel) { store.deletionMessage = nil }
-        } message: {
-            Text(store.deletionMessage ?? "")
-        }
         .onChange(of: store.filter) { _, _ in
             store.selectFirstIfNeeded()
             synchronizeViewer()
@@ -88,11 +62,6 @@ struct PhotoReviewView: View {
         .task { await refresh(selectInitialFilter: true) }
     }
 
-    private var deletionTitle: String {
-        let count = pendingDeletion?.count ?? 0
-        return count > 1 ? "Delete all \(count) marked photos from Apple Photos?" : "Delete this photo from Apple Photos?"
-    }
-
     @ViewBuilder
     private var gridContent: some View {
         if let error = store.error {
@@ -102,7 +71,7 @@ struct PhotoReviewView: View {
             ProgressView("Checking photos…")
         } else if viewer.photos.isEmpty {
             ContentUnavailableView {
-                Label(store.filter == .marked ? "No photos marked for deletion" : "Nothing here to review",
+                Label(store.filter == .marked ? "No photos marked for review" : "Nothing here to review",
                       systemImage: "checkmark.rectangle.stack")
             } description: {
                 Text(store.filter == .keep ? "Photos you keep will appear here." : "There are no photos in this list.")
@@ -125,16 +94,18 @@ struct PhotoReviewView: View {
             ToolbarItem(placement: .navigation) {
                 ViewerBackButton(tooltip: "Back to Library (Esc)", action: onClose)
                     .keyboardShortcut(.escape, modifiers: [])
-                    .disabled(store.isDeleting)
             }
+            .customToolbarSurface()
             ToolbarItem(placement: .principal) {
                 Text("Review photos").font(.headline)
             }
+            .customToolbarSurface()
             ToolbarItem(placement: .primaryAction) {
                 ViewerToolbarButton(systemImage: "arrow.clockwise", tooltip: "Refresh suggestions") {
                     Task { await refresh() }
-                }.disabled(store.isLoading || store.isDeleting)
+                }.disabled(store.isLoading)
             }
+            .customToolbarSurface()
         }
     }
 
@@ -155,17 +126,7 @@ struct PhotoReviewView: View {
                 .accessibilityAddTraits(store.filter == decision ? .isSelected : [])
             }
             Spacer(minLength: 0)
-            if store.filter == .marked, !store.markedCandidates.isEmpty {
-                Button("Delete all \(store.markedCandidates.count)…", systemImage: "trash", role: .destructive) {
-                    pendingDeletion = store.markedCandidates
-                }
-                .buttonStyle(HoverButtonStyle())
-                .font(.caption.weight(.medium))
-                .controlSize(.small)
-                .tint(.red)
-                .disabled(!store.markedCandidates.allSatisfy(\.canDeleteFromPhotos))
-                .help("Delete all marked photos in one batch. Kept photos are excluded.")
-            }
+
         }.padding(.horizontal, 20).padding(.vertical, 8)
     }
 
@@ -186,7 +147,7 @@ struct PhotoReviewView: View {
                         }
                     }
                     if store.filter == .pending {
-                        Button("Mark for deletion", systemImage: "bookmark") {
+                        Button(String(localized: "Review in Photos later", bundle: .module), systemImage: "bookmark") {
                             store.mark(candidate, as: .marked)
                             synchronizeViewer()
                         }
@@ -197,23 +158,15 @@ struct PhotoReviewView: View {
                             synchronizeViewer()
                         }
                     }
-                    Button("Delete photo…", systemImage: "trash", role: .destructive) {
-                        pendingDeletion = [candidate]
+                    Button(String(localized: "Open in Photos", bundle: .module), systemImage: "arrow.up.forward.app") {
+                        PhotoOriginal.open(assetID: candidate.id, errors: errors)
                     }
-                    .foregroundStyle(candidate.canDeleteFromPhotos ? .red : theme.textSecondary)
-                    .disabled(!candidate.canDeleteFromPhotos)
-                    .help(candidate.canDeleteFromPhotos ? "Delete the original from Apple Photos" : "No verified Apple Photos original")
                     Spacer(minLength: 0)
-                    if store.isDeleting {
-                        ProgressView().controlSize(.small)
-                        Text("Deleting…").font(.caption)
-                    } else {
-                        ViewerToolbarButton(systemImage: "calendar", tooltip: "Locate in Library") {
-                            let photo = candidate.photo
-                            onLocate(RandomBrowsePhoto(id: photo.id, path: candidate.previewPath, fallbackPath: nil,
-                                                       filename: photo.filename, capturedAt: photo.capturedAt,
-                                                       assetType: photo.assetType, shortCaption: photo.shortCaption))
-                        }
+                    ViewerToolbarButton(systemImage: "calendar", tooltip: "Locate in Library") {
+                        let photo = candidate.photo
+                        onLocate(RandomBrowsePhoto(id: photo.id, path: candidate.previewPath, fallbackPath: nil,
+                                                   filename: photo.filename, capturedAt: photo.capturedAt,
+                                                   assetType: photo.assetType, shortCaption: photo.shortCaption))
                     }
                 } else {
                     Text("\(store.checkedCount.formatted()) indexed descriptions checked")

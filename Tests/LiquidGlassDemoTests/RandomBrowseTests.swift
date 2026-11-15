@@ -81,6 +81,20 @@ import Testing
         #expect(emptyStore.status == .empty)
     }
 
+    @Test @MainActor func videoCoverIsExcludedBeforeVideoIsAnnotated() async throws {
+        let fixture = try makeFixture(ids: ["video"])
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let database = try DatabaseQueue(path: fixture.databasePath)
+        try await database.write { db in
+            try db.execute(sql: "UPDATE assets SET metadata_json = ? WHERE id = 'video'",
+                           arguments: ["{\"media_type\":\"video\"}"])
+        }
+        let store = RandomBrowseStore(databasePath: fixture.databasePath, shufflesQueue: false)
+        await store.start()
+        #expect(store.status == .empty)
+        #expect(store.currentID == nil)
+    }
+
     @Test @MainActor func preparedWindowSurvivesManySkippedIDsAndBacktrackingBranches() async throws {
         let skipped = (0..<12).map { String(format: "b%02d", $0) }
         let candidates = (0..<4).map { "c\($0)" }
@@ -150,7 +164,7 @@ import Testing
                 CREATE TABLE assets (
                     id TEXT PRIMARY KEY, file_path TEXT NOT NULL,
                     thumbnail_path TEXT NOT NULL, filename TEXT NOT NULL,
-                    captured_at TEXT, is_available INTEGER NOT NULL
+                    captured_at TEXT, is_available INTEGER NOT NULL, metadata_json TEXT DEFAULT '{}'
                 );
                 CREATE TABLE search_docs (
                     asset_id TEXT PRIMARY KEY, asset_type TEXT, short_caption TEXT
@@ -160,7 +174,7 @@ import Testing
                 let path = fixture.imagePath(for: id)
                 try (invalidImageIDs.contains(id) ? Data("not an image".utf8) : png).write(to: path)
                 try database.execute(
-                    sql: "INSERT INTO assets VALUES (?, ?, ?, ?, NULL, 1)",
+                    sql: "INSERT INTO assets (id, file_path, thumbnail_path, filename, captured_at, is_available) VALUES (?, ?, ?, ?, NULL, 1)",
                     arguments: [id, path.path, path.path, id]
                 )
             }

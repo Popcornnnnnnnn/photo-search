@@ -38,6 +38,11 @@ enum Layout {
     static let iconButtonWidth: CGFloat = 26
     static let iconButtonHeight: CGFloat = 24
 
+    // Library toolbar instruments (search field, filters, view controls) share
+    // one height. The macOS 26 glass toolbar is 38pt tall, so 30 keeps a native
+    // 4pt margin above and below instead of hugging the window's top edge.
+    static let toolbarControlHeight: CGFloat = 30
+
     // Hero card (HeroCard).
     static let heroDisc: CGFloat = 76  // gradient icon disc diameter
 }

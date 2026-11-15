@@ -15,6 +15,7 @@ from .config import (
     WORKER_STATUS_PATH,
     ensure_app_dirs,
 )
+from .cleanup_previews import prune_superseded_previews
 from .db import Database
 from .indexer import index_assets, pending_annotation_assets
 from .native import export_library_photos
@@ -175,12 +176,14 @@ def run_full_library_worker() -> dict[str, Any]:
                         db, FULL_IMPORT_DIR / "manifest.jsonl", "apple-photos-full",
                         sampling_strategy="full-library-v1", snapshot=result,
                     )
+                    pruned = prune_superseded_previews(db.conn, FULL_IMPORT_DIR, FULL_IMPORT_DIR / "manifest.jsonl")
                 state.update(
                     full_import_complete=True, last_sync_at=now_iso(),
                     library_images=int(result.get("library_assets", result.get("library_images", imported))),
                     library_videos=int(result.get("library_videos", 0)), imported=imported,
                     export_failed=int(result.get("failed", 0)),
                     regenerated_previews=int(result.get("regenerated", 0)),
+                    pruned_previews=pruned,
                 )
             # Visual indexing is independent of annotation-provider availability.
             if pending_embedding_count():

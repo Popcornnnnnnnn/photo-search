@@ -31,10 +31,7 @@ struct PhotoReviewCandidate: Identifiable, Sendable {
     let sourceIdentifier: String
     var id: String { photo.id }
 
-    var canDeleteFromPhotos: Bool {
-        ["apple-photos", "apple-photos-benchmark", "apple-photos-full"].contains(sourceKind)
-            && !sourceIdentifier.isEmpty
-    }
+
 }
 
 /// Conservative hints from the existing caption, not a new quality model.
@@ -113,7 +110,7 @@ enum PhotoReviewDecision: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .pending: "To review"
         case .keep: "Kept"
-        case .marked: "To delete"
+        case .marked: String(localized: "Review in Photos", bundle: .module)
         }
     }
 }
@@ -131,20 +128,15 @@ final class PhotoReviewStore {
     private(set) var error: String?
     private(set) var checkedCount = 0
     private(set) var unavailableCount = 0
-    private(set) var isDeleting = false
-    var deletionMessage: String?
     var filter: PhotoReviewDecision = .pending
     var selectedID: String?
     private var decisions: [String: SavedDecision] = [:]
     @ObservationIgnored private let databasePath: String
     @ObservationIgnored private let defaults: UserDefaults
-    @ObservationIgnored private let deleteAssets: @MainActor ([String]) async throws -> Void
 
-    init(databasePath: String = PhotoSearchDatabase.path, defaults: UserDefaults = .standard,
-         deleteAssets: @escaping @MainActor ([String]) async throws -> Void = PhotoLibraryDeletion.delete) {
+    init(databasePath: String = PhotoSearchDatabase.path, defaults: UserDefaults = .standard) {
         self.databasePath = databasePath
         self.defaults = defaults
-        self.deleteAssets = deleteAssets
         decisions = Self.readDecisions(defaults)
     }
 
@@ -175,7 +167,7 @@ final class PhotoReviewStore {
     }
 
     func load(selectInitialFilter: Bool = false) async {
-        guard !isLoading, !isDeleting else { return }
+        guard !isLoading else { return }
         isLoading = true
         error = nil
         defer { isLoading = false }
@@ -197,54 +189,6 @@ final class PhotoReviewStore {
         } catch {
             self.error = "Could not read the photo index. Try again when the library is available."
         }
-    }
-
-    /// A snapshot of the explicitly confirmed items, submitted in one Photos transaction.
-    @discardableResult
-    func delete(_ requested: [PhotoReviewCandidate]) async -> Bool {
-        guard !requested.isEmpty, !isDeleting, !isLoading else { return false }
-        isDeleting = true
-        deletionMessage = nil
-        defer { isDeleting = false }
-        do {
-            guard requested.allSatisfy(\.canDeleteFromPhotos) else { throw PhotoLibraryDeletion.Failure.unsupportedSource }
-            try PhotoSearchDatabase.read(at: databasePath) { db in
-                for candidate in requested {
-                    let matches = try Bool.fetchOne(db, sql: """
-                        SELECT EXISTS(SELECT 1 FROM assets WHERE id = ? AND sha256 = ?
-                            AND source_kind = ? AND source_identifier = ? AND is_available = 1)
-                        """, arguments: [candidate.id, candidate.fingerprint, candidate.sourceKind, candidate.sourceIdentifier])
-                    guard matches == true else { throw PhotoLibraryDeletion.Failure.changedSource }
-                }
-            }
-            try await deleteAssets(requested.map(\.sourceIdentifier))
-        } catch is CancellationError {
-            return false
-        } catch {
-            deletionMessage = error.localizedDescription
-            return false
-        }
-
-        // A local index error after a committed Photos change is not a failed deletion.
-        do {
-            let writer = try DatabaseQueue(path: databasePath)
-            try await writer.write { db in
-                for candidate in requested {
-                    try db.execute(sql: """
-                        UPDATE assets SET is_available = 0
-                        WHERE id = ? AND source_kind = ? AND source_identifier = ?
-                        """, arguments: [candidate.id, candidate.sourceKind, candidate.sourceIdentifier])
-                }
-            }
-        } catch {
-            deletionMessage = "Deleted from Photos. The local index could not refresh; deleted photos may remain in search until the next library sync."
-        }
-        let deletedIDs = Set(requested.map(\.id))
-        let oldIndex = visibleCandidates.firstIndex { $0.id == selectedID } ?? 0
-        candidates.removeAll { deletedIDs.contains($0.id) }
-        let remaining = visibleCandidates
-        selectedID = remaining.isEmpty ? nil : remaining[min(oldIndex, remaining.count - 1)].id
-        return true
     }
 
     private static func readDecisions(_ defaults: UserDefaults) -> [String: SavedDecision] {

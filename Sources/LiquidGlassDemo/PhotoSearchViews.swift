@@ -208,15 +208,15 @@ struct PhotoSearchBar: View {
 
     var body: some View {
         @Bindable var store = store
-        HStack(spacing: 12) {
-            HStack(spacing: 10) {
+        HStack(spacing: 8) {
+            HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(focused ? theme.accent : theme.textSecondary)
 
                 TextField("Search photos…", text: $store.query)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 15))
+                    .font(Typography.body)
                     .focused($focused)
                     .onSubmit { store.submit(history: history, encoder: encoder) }
 
@@ -225,9 +225,9 @@ struct PhotoSearchBar: View {
                         store.query = ""
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 15))
+                            .font(.system(size: 12))
                             .foregroundStyle(clearHovering ? theme.textPrimary : theme.textSecondary)
-                            .frame(width: 24, height: 24)
+                            .frame(width: 20, height: 20)
                             .background(clearHovering ? theme.hoverFill : .clear, in: Circle())
                     }
                     .buttonStyle(.plain)
@@ -241,15 +241,17 @@ struct PhotoSearchBar: View {
                     store.submit(history: history, encoder: encoder)
                 } label: {
                     Image(systemName: "arrow.up")
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(width: 24, height: 24)
                 }
-                .buttonStyle(HoverButtonStyle())
+                .buttonStyle(ToolbarButtonStyle())
                 .disabled(store.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .help(String(localized: "Search · Return", bundle: .module))
                 .accessibilityLabel(String(localized: "Search", bundle: .module))
 
                 Rectangle()
-                    .fill(theme.divider.opacity(0.75))
-                    .frame(width: Layout.hairline, height: 16)
+                    .fill(theme.divider.opacity(0.65))
+                    .frame(width: Layout.hairline, height: 13)
 
                 if store.isLoading {
                     ProgressView()
@@ -257,28 +259,25 @@ struct PhotoSearchBar: View {
                         .accessibilityLabel("Searching photos")
                 }
                 Text(resultCountLabel)
-                    .font(.caption2)
-                    .foregroundStyle(theme.textSecondary.opacity(0.82))
+                    .font(Typography.footnote)
+                    .monospacedDigit()
+                    .foregroundStyle(theme.textSecondary.opacity(0.78))
                     .fixedSize()
             }
-            .padding(.horizontal, 17)
-            .frame(height: 44)
-            .modifier(SearchGlassSurface(active: focused, hovering: hovering))
+            .padding(.horizontal, 13)
+            .frame(height: Layout.toolbarControlHeight)
+            .background(theme.panel, in: RoundedRectangle(cornerRadius: Radius.field))
             .overlay {
-                Capsule()
+                RoundedRectangle(cornerRadius: Radius.field)
                     .strokeBorder(
                         focused
-                            ? theme.accent.opacity(0.58)
-                            : theme.textPrimary.opacity(hovering ? 0.13 : 0.07),
+                            ? theme.accent.opacity(0.55)
+                            : theme.textPrimary.opacity(hovering ? 0.18 : 0.09),
                         lineWidth: 1
                     )
+                    .allowsHitTesting(false)
             }
-            .shadow(
-                color: focused ? theme.accent.opacity(0.12) : .black.opacity(hovering ? 0.08 : 0.045),
-                radius: focused ? 13 : (hovering ? 8 : 5),
-                y: 2
-            )
-            .contentShape(Capsule())
+            .contentShape(RoundedRectangle(cornerRadius: Radius.field))
             .onTapGesture { focused = true }
             .onHover { hovering = $0 }
 
@@ -288,7 +287,7 @@ struct PhotoSearchBar: View {
 
             PhotoImageSizingPicker(selection: $thumbnailContentMode)
         }
-        .frame(maxWidth: 660)
+        .frame(maxWidth: 520)
         .onChange(of: store.query) { _, newValue in
             if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 onEmpty()
@@ -302,7 +301,7 @@ struct PhotoSearchBar: View {
         if store.submittedQuery.isEmpty {
             return store.section.countDescription(store.resultCount)
         }
-        return "\(store.resultCount.formatted()) results"
+        return store.resultCount == 1 ? "1 result" : "\(store.resultCount.formatted()) results"
     }
 }
 
@@ -320,11 +319,13 @@ private struct PhotoImageSizingPicker: View {
                        help: "Fill each card, cropping the edges")
         }
         .padding(3)
-        .background(theme.selectionFill, in: RoundedRectangle(cornerRadius: 10))
-        .themedBorder(10)
+        .frame(height: Layout.toolbarControlHeight)
+        .background(theme.hoverFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .themedBorder(8)
         .fixedSize()
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Image sizing")
+        // No grouping modifier here: a container element inside the toolbar
+        // made the whole item report one child's label, so the search field
+        // was announced as “Fit”. Each mode button keeps its own label/hint.
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: selection)
     }
 
@@ -332,25 +333,36 @@ private struct PhotoImageSizingPicker: View {
         Button {
             selection = mode
         } label: {
-            Label(title, systemImage: icon)
+            // A `Label` here is picked up by the toolbar as the item's title,
+            // which renamed every control in the search cluster to “Fit”. A
+            // plain icon + text stack keeps the name on this button only.
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                Text(title)
+            }
                 .labelStyle(.titleAndIcon)
                 .font(Typography.control)
                 .foregroundStyle(selection == mode ? theme.accent : theme.textSecondary)
-                .frame(width: 74, height: 30)
+                .frame(width: 52, height: 24)
                 .background {
                     if selection == mode {
-                        RoundedRectangle(cornerRadius: 7)
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .fill(theme.background)
-                            .shadow(color: .black.opacity(0.08), radius: 2, y: 1)
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .strokeBorder(theme.textPrimary.opacity(0.06), lineWidth: 1)
+                            }
                             .matchedGeometryEffect(id: "selection", in: highlight)
                     }
                 }
-                .contentShape(RoundedRectangle(cornerRadius: 7))
+                .contentShape(RoundedRectangle(cornerRadius: 6))
         }
-        .buttonStyle(HoverButtonStyle(horizontalPadding: 0, verticalPadding: 0, cornerRadius: 7))
+        .buttonStyle(ToolbarButtonStyle(cornerRadius: 6))
         .pointerStyle(.link)
         .help(help)
-        .accessibilityLabel(title)
+        // The Label text already supplies the accessible name. An explicit
+        // `accessibilityLabel` here leaked upward through the toolbar item and
+        // renamed every control in the search cluster to “Fit”.
         .accessibilityHint(help)
         .accessibilityAddTraits(selection == mode ? .isSelected : [])
     }
@@ -371,8 +383,6 @@ struct PhotoLandingSearchView: View {
     @FocusState private var focused: Bool
     @State private var hovering = false
     @State private var submitHovering = false
-    @State private var pointerPosition = UnitPoint.center
-    @State private var fieldSize = CGSize(width: 720, height: 64)
     @State private var rainbowPhase = 0.0
 
     private let searchBlue = Color(hex: 0x2463EB)
@@ -505,13 +515,10 @@ struct PhotoLandingSearchView: View {
         .padding(.trailing, 14)
         .frame(height: 64)
         .modifier(SearchGlassSurface(active: focused, hovering: hovering))
-        .background {
-            Capsule()
-                .stroke(rainbowGradient, lineWidth: 7)
-                .blur(radius: 12)
-                .opacity(focused ? 0.20 : (hovering ? 0.14 : 0.06))
-                .padding(-2)
-        }
+        // A blurred 7pt stroke used to sit behind the glass. At 64pt tall the
+        // 12pt blur spread the rainbow a third of the way into the capsule, so
+        // the field read as a glowing rainbow tube instead of a text field.
+        // The border below carries the accent now; nothing bleeds inward.
         .overlay {
             ZStack {
                 Capsule()
@@ -521,11 +528,8 @@ struct PhotoLandingSearchView: View {
                     )
 
                 Capsule()
-                    .strokeBorder(
-                        rainbowGradient,
-                        lineWidth: focused ? 1.7 : 1.2
-                    )
-                    .opacity(focused ? 0.82 : (hovering ? 0.65 : 0.32))
+                    .strokeBorder(rainbowGradient, lineWidth: 1)
+                    .opacity(focused ? 0.55 : (hovering ? 0.42 : 0.26))
 
                 Capsule()
                     .strokeBorder(
@@ -534,18 +538,6 @@ struct PhotoLandingSearchView: View {
                         lineWidth: 0.75
                     )
                     .padding(1.5)
-
-                Capsule()
-                    .strokeBorder(
-                        RadialGradient(
-                            colors: [.white.opacity(0.95), .white.opacity(0.25), .clear],
-                            center: pointerPosition,
-                            startRadius: 0,
-                            endRadius: 190
-                        ),
-                        lineWidth: 2
-                    )
-                    .opacity(hovering && !reduceMotion ? 0.8 : 0)
             }
             .allowsHitTesting(false)
         }
@@ -557,20 +549,7 @@ struct PhotoLandingSearchView: View {
         )
         .contentShape(Capsule())
         .onTapGesture { focused = true }
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { fieldSize = $0 }
-        .onContinuousHover { phase in
-            switch phase {
-            case .active(let location):
-                hovering = true
-                guard !reduceMotion else { return }
-                let x = min(max(location.x / max(1, fieldSize.width), 0), 1)
-                let y = min(max(location.y / max(1, fieldSize.height), 0), 1)
-                pointerPosition = UnitPoint(x: x, y: y)
-            case .ended:
-                hovering = false
-                pointerPosition = .center
-            }
-        }
+        .onHover { hovering = $0 }
         .task(id: reduceMotion) {
             focused = true
             rainbowPhase = 0
@@ -580,7 +559,6 @@ struct PhotoLandingSearchView: View {
             }
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.20), value: hovering)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: pointerPosition)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.20), value: focused)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: canSubmit)
     }
@@ -591,8 +569,7 @@ struct PhotoLandingSearchView: View {
     }
 
     private var rainbowGradient: AngularGradient {
-        let angle = rainbowPhase + (pointerPosition.x - 0.5) * 36
-        return AngularGradient(
+        AngularGradient(
             colors: [
                 Color(hex: 0x4B83F5), Color(hex: 0x51CDBF),
                 Color(hex: 0xF3C565), Color(hex: 0xF58D9B),
@@ -600,8 +577,8 @@ struct PhotoLandingSearchView: View {
                 Color(hex: 0x4B83F5)
             ],
             center: .center,
-            startAngle: .degrees(angle),
-            endAngle: .degrees(angle + 360)
+            startAngle: .degrees(rainbowPhase),
+            endAngle: .degrees(rainbowPhase + 360)
         )
     }
 }
@@ -847,6 +824,7 @@ struct PhotoGrid: View {
 
 struct PhotoInspector: View {
     @Environment(ThemeStore.self) private var theme
+    @Environment(ErrorStore.self) private var errors
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let store: PhotoSearchStore
     var showsThumbnail = true
@@ -858,6 +836,10 @@ struct PhotoInspector: View {
         if let photo = store.selectedPhoto {
             ScrollableContent {
                 VStack(alignment: .leading, spacing: 16) {
+                    Button(String(localized: "Open in Photos", bundle: .module), systemImage: "arrow.up.forward.app") {
+                        PhotoOriginal.open(assetID: photo.id, errors: errors)
+                    }
+                    .buttonStyle(HoverButtonStyle())
                     if showsThumbnail {
                         PhotoThumbnailView(path: photo.thumbnailPath, contentMode: .fit)
                             .frame(maxWidth: .infinity)
@@ -1214,6 +1196,7 @@ struct PhotoOneUpView: View {
         }
         .toolbar { if showsToolbar { viewerToolbar } }
         .focusable()
+        .focusEffectDisabled()
         .focused($focused)
         .onAppear { focused = true }
         .onChange(of: store.selectedID) { _, _ in
@@ -1249,6 +1232,7 @@ struct PhotoOneUpView: View {
                 }
             }
         }
+        .customToolbarSurface()
         ToolbarItem(placement: .principal) {
             if let photo = store.selectedPhoto {
                 VStack(spacing: 1) {
@@ -1263,7 +1247,11 @@ struct PhotoOneUpView: View {
                 .frame(maxWidth: 320)
             }
         }
+        .customToolbarSurface()
         ToolbarItemGroup(placement: .primaryAction) {
+            ViewerToolbarButton(systemImage: "arrow.up.forward.app", tooltip: String(localized: "Open in Photos", bundle: .module)) {
+                if let photo = store.selectedPhoto { PhotoOriginal.open(assetID: photo.id, errors: errors) }
+            }.disabled(store.selectedPhoto == nil)
             if store.selectedPhoto?.isVideo != true {
             ViewerToolbarButton(systemImage: "rotate.right", tooltip: "Rotate Clockwise") {
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
@@ -1282,6 +1270,7 @@ struct PhotoOneUpView: View {
                 infoVisible.toggle()
             }
         }
+        .customToolbarSurface()
     }
 
     private func copySelectedImage() {
@@ -1426,6 +1415,7 @@ struct PhotoOneUpView: View {
 }
 
 struct ViewerBackButton: View {
+    @Environment(ThemeStore.self) private var theme
     var tooltip = "Back to photos (Esc)"
     let action: () -> Void
 
@@ -1433,9 +1423,10 @@ struct ViewerBackButton: View {
         Button(action: action) {
             Image(systemName: "chevron.left")
                 .font(.system(size: 13, weight: .semibold))
-                .frame(width: 28, height: 26)
+                .foregroundStyle(theme.textSecondary)
+                .frame(width: Layout.toolbarControlHeight, height: Layout.toolbarControlHeight)
         }
-        .buttonStyle(HoverButtonStyle(horizontalPadding: 0, verticalPadding: 0))
+        .buttonStyle(ToolbarButtonStyle())
         .accessibilityLabel(tooltip)
         .help(tooltip)
     }
@@ -1443,27 +1434,22 @@ struct ViewerBackButton: View {
 
 struct ViewerToolbarButton: View {
     @Environment(ThemeStore.self) private var theme
-    @Environment(\.isEnabled) private var isEnabled
     let systemImage: String
     let tooltip: String
     var isActive = false
     let action: () -> Void
 
-    @State private var hovering = false
-
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(isActive ? theme.accent : (hovering && isEnabled ? theme.textPrimary : theme.textSecondary))
-                .frame(width: 28, height: 26)
-                .background(hovering && isEnabled ? theme.hoverFill : .clear, in: RoundedRectangle(cornerRadius: 7))
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(isActive ? theme.accent : theme.textSecondary)
+                .frame(width: Layout.toolbarControlHeight, height: Layout.toolbarControlHeight)
         }
-        .buttonStyle(.plain)
-        .pointerStyle(.link)
+        .buttonStyle(ToolbarButtonStyle(isSelected: isActive))
         .accessibilityLabel(String(localized: String.LocalizationValue(tooltip), bundle: .module))
+        .accessibilityAddTraits(isActive ? .isSelected : [])
         .help(String(localized: String.LocalizationValue(tooltip), bundle: .module))
-        .onHover { hovering = $0 }
     }
 }
 

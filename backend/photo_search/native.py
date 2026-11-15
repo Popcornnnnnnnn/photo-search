@@ -79,6 +79,30 @@ def export_recent_photos(output_dir: Path, limit: int) -> dict[str, Any]:
     return export_library_photos(output_dir, limit, "recent")
 
 
+def export_video_for_indexing(identifier: str, modified_at: str | None, output_dir: Path) -> Path:
+    """Export one current Photos video to a private, caller-owned temporary directory."""
+    ensure_native()
+    app_bundle = PHOTO_EXPORTER.parents[2]
+    result_path = output_dir / "result.json"
+    try:
+        process = subprocess.run(
+            ["open", "-g", "-W", "-n", str(app_bundle), "--args", "--output", str(output_dir),
+             "--video-id", identifier, "--expected-modified-at", modified_at or "", "--no-prompt"],
+            capture_output=True, text=True, timeout=3600,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise NativeHelperError("Photos video export timed out") from error
+    if process.returncode or not result_path.is_file():
+        raise NativeHelperError(process.stderr.strip() or "Photos could not export the video")
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    if result.get("error"):
+        raise NativeHelperError(result["error"])
+    video = output_dir / "video.mov"
+    if result.get("video") != str(video) or not video.is_file():
+        raise NativeHelperError("Photos did not produce the requested video")
+    return video
+
+
 def authorize_photos() -> dict[str, Any]:
     """Only a user-invoked action may display the Photos consent dialog."""
     ensure_native()

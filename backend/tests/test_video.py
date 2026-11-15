@@ -9,7 +9,9 @@ from photo_search.db import Database
 from photo_search.embeddings import (DIMENSIONS, EMBEDDING_MODEL, EMBEDDING_REVISION,
                                      EMBEDDING_NAMESPACE, EMBEDDING_PROMPT,
                                      VIDEO_EMBEDDING_NAMESPACE, VIDEO_EMBEDDING_PROMPT, index_embeddings)
-from photo_search.native import NativeHelperError, export_library_photos
+from photo_search.native import NativeHelperError, export_library_photos, export_video_for_indexing
+from photo_search.indexer import index_assets
+from photo_search.providers import default_provider
 from photo_search.search import search
 from photo_search.sources import import_photos_manifest
 from photo_search.video import extract_frame, frame_times, index_video, probe_video, run_local, transcribe_video
@@ -33,7 +35,7 @@ class VideoTests(unittest.TestCase):
         self.cover.write_bytes(b"cover")
         self.record = {"id": "v", "local_identifier": "v/0", "path": str(self.video),
                        "thumbnail_path": str(self.cover), "filename": "video.mov", "media_type": "video",
-                       "duration": 65, "width": 100, "height": 100}
+                       "duration": 65, "width": 100, "height": 100, "modified_at": "2026-01-01T00:00:00Z"}
         self.import_records([self.record])
 
     def tearDown(self):
@@ -61,11 +63,45 @@ class VideoTests(unittest.TestCase):
                                  model_revision=EMBEDDING_REVISION, prompt_version=VIDEO_EMBEDDING_PROMPT,
                                  vector=[1] + [0] * (DIMENSIONS - 1))
         self.video.write_bytes(b"edited audio with identical cover")
+        self.record["modified_at"] = "2026-01-02T00:00:00Z"
         self.import_records([self.record])
         self.assertIsNone(self.db.active_artifact("v", "transcript"))
         self.assertIsNone(self.db.active_artifact("v", "annotation"))
         self.assertEqual(self.db.active_embeddings(VIDEO_EMBEDDING_NAMESPACE), [])
         self.assertEqual(self.db.search_docs(), [])
+
+    def test_unchanged_legacy_video_keeps_derived_data_without_using_movie_copy(self):
+        with self.db.conn:
+            self.db.conn.execute("UPDATE assets SET sha256='legacy-video-hash', file_path=? WHERE id='v'",
+                                 (str(self.video),))
+        self.enrich()
+        with patch("photo_search.sources.shutil.copy2", side_effect=AssertionError("unexpected copy")):
+            self.import_records([self.record])
+        asset = self.db.get_asset("v")
+        self.assertEqual(asset["file_path"], str(self.cover))
+        self.assertEqual(asset["sha256"], "legacy-video-hash")
+        self.assertIsNotNone(self.db.active_artifact("v", "annotation"))
+        self.assertEqual(len(self.db.search_docs()), 1)
+        self.assertTrue(self.video.exists())  # No pre-existing data is removed during migration.
+
+    def test_video_is_exported_only_for_indexing_and_temporary_copy_is_removed(self):
+        asset = self.db.get_asset("v")
+        exported = []
+        def fake_export(identifier, modified, directory):
+            self.assertEqual(identifier, "v/0")
+            self.assertEqual(modified, self.record["modified_at"])
+            path = directory / "video.mov"
+            path.write_bytes(b"temporary video")
+            exported.append(path)
+            return path
+        def process(_db, _asset, _client, _provider, _progress, path, _metadata):
+            self.assertTrue(path.is_file())
+            raise RuntimeError("processing failed")
+        with patch("photo_search.video.export_video_for_indexing", side_effect=fake_export), \
+             patch("photo_search.video._index_video_file", side_effect=process):
+            with self.assertRaisesRegex(RuntimeError, "processing failed"):
+                index_video(self.db, asset, None, None, lambda _: None)
+        self.assertFalse(exported[0].exists())
 
     def test_only_complete_mixed_inventory_can_hide_missing_video(self):
         self.enrich()
@@ -87,6 +123,27 @@ class VideoTests(unittest.TestCase):
         with patch("photo_search.native.ensure_native"), patch("photo_search.native.subprocess.run", side_effect=denied):
             with self.assertRaisesRegex(NativeHelperError, "Photos access was not granted"):
                 export_library_photos(output, 1, "all")
+
+    def test_on_demand_export_refuses_changed_or_inaccessible_photos(self):
+        def stale(arguments, **kwargs):
+            self.assertIn("--no-prompt", arguments)
+            self.assertEqual(arguments[arguments.index("--expected-modified-at") + 1], "version-1")
+            (self.root / "result.json").write_text(json.dumps({"error": "Source changed or is unavailable"}))
+            return Mock(returncode=0, stderr="")
+        with patch("photo_search.native.ensure_native"), patch("photo_search.native.subprocess.run", side_effect=stale):
+            with self.assertRaisesRegex(NativeHelperError, "changed or is unavailable"):
+                export_video_for_indexing("v/0", "version-1", self.root)
+
+    def test_persistent_video_export_failure_is_isolated_after_retries(self):
+        with patch("photo_search.indexer.QwenClient"), \
+             patch("photo_search.indexer.index_video", side_effect=NativeHelperError("unavailable")):
+            for _ in range(2):
+                with self.assertRaises(NativeHelperError):
+                    index_assets(self.db, halt_on_error=True, pending_only=True,
+                                 provider=default_provider(), progress=lambda _: None)
+            index_assets(self.db, halt_on_error=True, pending_only=True,
+                         provider=default_provider(), progress=lambda _: None)
+        self.assertTrue(self.db.is_processing_skipped("v", "index"))
 
     def test_silent_video_does_not_require_speech_model(self):
         with patch("photo_search.video.run_local", side_effect=AssertionError("ASR should not run")):
@@ -167,6 +224,7 @@ class VideoTests(unittest.TestCase):
         client.summarize_video.return_value = ({"short_caption": "海边旅行"}, "{}")
         asset = self.db.get_asset("v")
         with patch("photo_search.video.probe_video", return_value={"duration": 65, "has_audio": True}), \
+             patch("photo_search.video.export_video_for_indexing", return_value=self.video), \
              patch("photo_search.video.transcribe_video", return_value=speech) as asr, \
              patch("photo_search.video.extract_frame", side_effect=lambda path, timestamp, destination: timestamp), \
              patch("photo_search.video.run_ocr", return_value={"text": "滨海公路"}):

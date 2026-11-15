@@ -160,6 +160,32 @@ struct PhotoExporter {
                 return
             }
 
+            // Full-library scans only keep a preview. Export a video on demand
+            // into the caller's temporary directory when it needs indexing.
+            if let identifier = argument("--video-id") {
+                let matches = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
+                guard let asset = matches.firstObject, asset.mediaType == .video else {
+                    throw ExportError.imageUnavailable(identifier)
+                }
+                let iso = ISO8601DateFormatter()
+                iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                let modifiedAt = asset.modificationDate.map { iso.string(from: $0) } ?? ""
+                guard let expected = argument("--expected-modified-at"), expected == modifiedAt else {
+                    throw ExportError.imageUnavailable(identifier)
+                }
+                let destination = output.appendingPathComponent("video.mov")
+                try await exportVideo(asset: asset, manager: PHImageManager.default(), destination: destination)
+                let current = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject
+                guard let current,
+                      (current.modificationDate.map { iso.string(from: $0) } ?? "") == expected else {
+                    try? FileManager.default.removeItem(at: destination)
+                    throw ExportError.imageUnavailable(identifier)
+                }
+                let data = try JSONSerialization.data(withJSONObject: ["video": destination.path])
+                try data.write(to: output.appendingPathComponent("result.json"), options: .atomic)
+                return
+            }
+
             let options = PHFetchOptions()
             options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
             if strategy == "recent" { options.fetchLimit = limit }
@@ -228,36 +254,43 @@ struct PhotoExporter {
             var failures = 0
             var failedIDs: [String] = []
             var regenerated = 0
+            let outputDir = output.resolvingSymlinksInPath().standardizedFileURL
 
             for asset in selected {
                 do {
                     let id = stableID(asset.localIdentifier)
                     let modifiedAt = asset.modificationDate.map { iso.string(from: $0) }
                     let old = previous[id]
-                    let oldURL = old.map { URL(fileURLWithPath: $0.path) }
+                    let isVideo = asset.mediaType == .video
+                    let oldURL = old.map { URL(fileURLWithPath: isVideo ? ($0.thumbnailPath ?? $0.path) : $0.path) }
                     let oldDate = oldURL.flatMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate }
                     let legacyUnchanged = old?.modifiedAt == nil
                         && (asset.modificationDate.map { $0 <= (oldDate ?? .distantPast) } ?? true)
-                    let isVideo = asset.mediaType == .video
-                    let reusable = (old?.mediaType ?? "image") == (isVideo ? "video" : "image")
-                        && old != nil && (old?.modifiedAt == modifiedAt || legacyUnchanged)
+                    let sameKindAndSize = (old?.mediaType ?? "image") == (isVideo ? "video" : "image")
                         && old?.width == asset.pixelWidth && old?.height == asset.pixelHeight
-                        && FileManager.default.fileExists(atPath: old?.path ?? "")
-                        && (!isVideo || FileManager.default.fileExists(atPath: old?.thumbnailPath ?? ""))
+                    let oldRegularFile = oldURL.map { url in
+                        let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                        return values?.isRegularFile == true && values?.isSymbolicLink != true
+                    } == true
+                    let reusable = old != nil && sameKindAndSize && oldRegularFile
+                        && (old?.modifiedAt == modifiedAt || legacyUnchanged)
                     let version = stableID(modifiedAt ?? asset.creationDate.map { iso.string(from: $0) } ?? "original")
-                    let filename = id + "-" + version.suffix(12) + (isVideo ? ".mov" : ".jpg")
-                    let destination = reusable ? oldURL! : output.appendingPathComponent(filename)
-                    let thumbnail = isVideo
-                        ? (reusable ? URL(fileURLWithPath: old!.thumbnailPath!)
-                           : destination.deletingPathExtension().appendingPathExtension("jpg"))
-                        : destination
+                    let filename = id + "-" + version.suffix(12) + ".jpg"
+                    var destination = reusable ? oldURL! : output.appendingPathComponent(filename)
                     if !reusable {
-                        if isVideo { try await exportVideo(asset: asset, manager: manager, destination: destination) }
                         let image = try requestPreview(asset: asset, manager: manager)
                         let data = try jpegData(image, identifier: asset.localIdentifier)
-                        try data.write(to: thumbnail, options: .atomic)
-                        regenerated += 1
+                        if let oldURL, oldRegularFile, sameKindAndSize,
+                           oldURL.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL == outputDir,
+                           oldURL.pathExtension.lowercased() == "jpg",
+                           (try? Data(contentsOf: oldURL)) == data {
+                            destination = oldURL
+                        } else {
+                            try data.write(to: destination, options: .atomic)
+                            regenerated += 1
+                        }
                     }
+                    let thumbnail = destination
                     let record = ExportRecord(
                         id: id,
                         localIdentifier: asset.localIdentifier,

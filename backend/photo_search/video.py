@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import APP_HOME
-from .native import run_ocr, simplify_chinese
+from .native import export_video_for_indexing, run_ocr, simplify_chinese
 
 VIDEO_PREPROCESS_VERSION = "video-frames-5s-v1"
 VIDEO_PROMPT_VERSION = "whole-video-v1"
@@ -120,8 +120,17 @@ def transcribe_video(path: Path, info: dict[str, Any], directory: Path) -> dict[
 
 def index_video(db, asset, client, provider, progress) -> dict[str, Any]:
     """Persist reusable stages in the existing artifact store, then one final annotation."""
-    path = Path(asset["file_path"])
     metadata = json.loads(asset["metadata_json"])
+    if asset["source_kind"] in {"apple-photos", "apple-photos-full", "apple-photos-benchmark"}:
+        with tempfile.TemporaryDirectory(prefix="photo-search-video-source-") as temporary:
+            directory = Path(temporary)
+            os.chmod(directory, 0o700)
+            path = export_video_for_indexing(asset["source_identifier"], metadata.get("source_modified_at"), directory)
+            return _index_video_file(db, asset, client, provider, progress, path, metadata)
+    return _index_video_file(db, asset, client, provider, progress, Path(asset["file_path"]), metadata)
+
+
+def _index_video_file(db, asset, client, provider, progress, path, metadata) -> dict[str, Any]:
     info = probe_video(path)
     times = frame_times(info["duration"])
     asset_id = asset["id"]
