@@ -1,3 +1,4 @@
+import fcntl
 import json
 import shutil
 import sqlite3
@@ -7,8 +8,9 @@ from array import array
 from pathlib import Path
 from unittest.mock import patch
 
+from photo_search.cleanup_previews import prune_superseded_previews
 from photo_search.db import Database
-from photo_search.sources import import_photos_manifest, sha256_file
+from photo_search.sources import import_full_photos_library, import_photos_manifest, sha256_file
 
 
 class SyncTests(unittest.TestCase):
@@ -77,6 +79,13 @@ class SyncTests(unittest.TestCase):
         with patch("photo_search.sources.sha256_file", side_effect=AssertionError("unchanged preview rehashed")), \
              patch("photo_search.sources.shutil.copy2", side_effect=AssertionError("unchanged preview copied")):
             self.ingest([record])
+            # Metadata-only modified_at bump reusing the same preview file updates metadata without rehashing or invalidating index data.
+            bumped = {**record, "modified_at": "2026-11-15T04:00:00Z"}
+            self.ingest([bumped])
+        asset = self.db.get_asset("photo")
+        self.assertEqual(json.loads(asset["metadata_json"])["source_modified_at"], "2026-11-15T04:00:00Z")
+        self.assertIsNotNone(self.db.active_artifact("photo", "annotation"))
+        self.assertEqual(len(self.db.search_docs()), 1)
         self.assertEqual(len(self.db.active_embeddings("test")), 1)
 
     def test_legacy_duplicate_migrates_to_one_preview_without_losing_index(self):
@@ -126,6 +135,68 @@ class SyncTests(unittest.TestCase):
                          "present_ids": ["photo"], "failed_ids": ["photo"]})
         self.assertEqual(self.db.search_docs(), [])
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0], 1)
+
+    def test_sync_prunes_superseded_previews_under_worker_lock(self):
+        imports = self.root / "imports/photos-full"
+        imports.mkdir(parents=True)
+        asset_id = f"photos-{1:024x}"
+        deleted_id = f"photos-{2:024x}"
+        v1 = imports / f"{asset_id}-{'1' * 12}.jpg"
+        v2 = imports / f"{asset_id}-{'2' * 12}.jpg"
+        deleted_preview = imports / f"{deleted_id}-{'9' * 12}.jpg"
+        v1.write_bytes(b"v1")
+        deleted_preview.write_bytes(b"deleted")
+
+        manifest = imports / "manifest.jsonl"
+        manifest.write_text(
+            json.dumps({"id": asset_id, "local_identifier": asset_id, "path": str(v1),
+                        "filename": f"{asset_id}.jpg", "width": 100, "height": 100,
+                        "modified_at": "2026-11-14T00:00:00Z"}) + "\n"
+            + json.dumps({"id": deleted_id, "local_identifier": deleted_id, "path": str(deleted_preview),
+                          "filename": f"{deleted_id}.jpg", "width": 100, "height": 100,
+                          "modified_at": "2026-11-14T00:00:00Z"}) + "\n",
+            encoding="utf-8",
+        )
+        import_photos_manifest(self.db, manifest, "apple-photos-full")
+
+        # Before SQLite updates to v2, v1 is still referenced by SQLite and must not be removed.
+        v2.write_bytes(b"v2")
+        manifest.write_text(
+            json.dumps({"id": asset_id, "local_identifier": asset_id, "path": str(v2),
+                        "filename": f"{asset_id}.jpg", "width": 100, "height": 100,
+                        "modified_at": "2026-11-15T00:00:00Z"}) + "\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(prune_superseded_previews(self.db.conn, imports, manifest), 0)
+        self.assertTrue(v1.exists())
+
+        def fake_export(output, limit, strategy):
+            return {
+                "manifest": str(manifest),
+                "full_snapshot": True,
+                "strategy": strategy,
+                "library_assets": 1,
+                "present_ids": [asset_id],
+                "failed_ids": [],
+            }
+
+        with patch("photo_search.sources.APP_HOME", self.root), \
+             patch("photo_search.sources.IMPORT_DIR", self.root / "imports"), \
+             patch("photo_search.sources.ensure_app_dirs"), \
+             patch("photo_search.sources.export_library_photos", side_effect=fake_export):
+            with (self.root / "worker.lock").open("a+") as held:
+                fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with self.assertRaises(BlockingIOError):
+                    import_full_photos_library(self.db)
+                self.assertTrue(v1.exists())
+
+            summary = import_full_photos_library(self.db)
+            self.assertEqual(summary["pruned_previews"], 1)
+            self.assertFalse(v1.exists())
+            self.assertTrue(v2.exists())
+            # Hidden/deleted asset previews remain intact until explicit cleanup.
+            self.assertEqual(self.db.get_asset(deleted_id)["is_available"], 0)
+            self.assertTrue(deleted_preview.exists())
 
 
 class MigrationTests(unittest.TestCase):

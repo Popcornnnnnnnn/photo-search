@@ -73,3 +73,35 @@ class WorkerStatusTests(unittest.TestCase):
             stop = start_heartbeat({"status": "waiting"}, interval=0.01)
             stop()
             write.assert_not_called()
+
+    def test_sync_prunes_superseded_previews_after_manifest_import(self):
+        with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
+            events = []
+            provider = ModelProvider("local", "Local", "local", "http://127.0.0.1:1234/v1", "vision", "local")
+            db = MagicMock()
+            db.__enter__.return_value = db
+            db.release_processing_skips.return_value = 0
+            db.pipeline_counts.return_value = {"skipped": 0, "annotated": 1}
+            imports_dir = Path(tmp) / "imports/photos-full"
+            imports_dir.mkdir(parents=True)
+            for name, value in {
+                "ensure_app_dirs": None, "load_worker_status": {}, "sync_due": True,
+                "load_provider": provider, "load_fallback_provider": None,
+                "Database": db, "start_heartbeat": lambda: None,
+                "write_worker_status": None, "pending_embedding_count": 0,
+                "pending_annotation_assets": [], "load_embedding_status": {"status": "complete"},
+                "embedding_count": 1,
+            }.items():
+                stack.enter_context(patch.object(worker, name, return_value=value))
+            stack.enter_context(patch.object(worker, "LOCK_PATH", Path(tmp) / "worker.lock"))
+            stack.enter_context(patch.object(worker, "FULL_IMPORT_DIR", imports_dir))
+            stack.enter_context(patch.object(worker, "export_library_photos",
+                side_effect=lambda *a, **k: (events.append("export"), {"library_assets": 1, "regenerated": 1})[1]))
+            stack.enter_context(patch.object(worker, "import_photos_manifest",
+                side_effect=lambda *a, **k: (events.append("import"), 1)[1]))
+            stack.enter_context(patch.object(worker, "prune_superseded_previews",
+                side_effect=lambda *a, **k: (events.append("prune"), 2)[1]))
+            state = worker.run_full_library_worker()
+            self.assertEqual(events, ["export", "import", "prune"])
+            self.assertEqual(state["pruned_previews"], 2)
+            self.assertEqual(state["status"], "complete")

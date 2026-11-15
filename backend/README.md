@@ -299,20 +299,25 @@ Video vectors become eligible after annotation and are invalidated when the sour
 video or its annotation changes. Search merges both contracts and returns one result
 per asset. Image-only random browsing and photo review exclude videos.
 
-The full-library exporter retains one JPEG preview per version in its import
-cache. Video indexing exports the current version into a private temporary folder
-and removes it after processing; playback uses PhotoKit directly. Existing
-legacy copies are not automatically removed. Its normal five-minute sync discovers
-video edits and removals; only a complete authorized mixed-media inventory reconciles videos.
-Legacy photo-only inventories cannot mark videos as deleted.
+The full-library exporter retains one current JPEG preview per asset in its
+import cache, reuses unchanged bytes across metadata-only modification bumps,
+and prunes superseded preview versions after SQLite updates under `worker.lock`.
+Video indexing exports the current version into a private temporary folder and
+removes it after processing; playback uses PhotoKit directly. Its normal
+five-minute sync discovers video edits and removals; only a complete authorized
+mixed-media inventory reconciles videos. Legacy photo-only inventories cannot
+mark videos as deleted.
 
-After upgrading and completing a full sync, check legacy duplicate previews with
-`PYTHONPATH=backend python -m photo_search.cleanup_previews` from the repository
-root. The optional `--trash` moves only unreferenced previews whose copies in
-the full-library import folder match byte for byte. It takes the worker and
-index locks, preserves the other copy, and leaves a restore note in Trash. It
-does not remove old videos or files from Apple Photos. Space is reclaimed when
-Trash is emptied.
+After upgrading and completing a full sync, check unreferenced legacy exports
+and stale previews with `PYTHONPATH=backend python -m photo_search.cleanup_previews`
+from the repository root. The optional `--trash` takes `worker.lock` and an
+immediate SQLite transaction, verifies candidates against both `manifest.jsonl`
+and SQLite `assets`, and moves unreferenced legacy `.mov` exports, superseded
+`imports/photos-full/photos-*.jpg` previews, duplicate `assets/photos-*.jpg`
+previews, and confirmed-deleted stale `assets/photos-*.jpg` previews to Trash
+with a restore note. It preserves `photo-search.sqlite3`, active previews,
+`models/`, config, and Apple Photos originals. Space is reclaimed when Trash is
+emptied.
 
 Scheduled runs never display a Photos consent dialog. If macOS requires renewed
 access after rebuilding the exporter, open **Settings → Indexing → Allow Photos

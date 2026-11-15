@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import shutil
@@ -8,7 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-from .config import ASSET_DIR, IMPORT_DIR, PREPROCESS_VERSION, ensure_app_dirs
+from .cleanup_previews import prune_superseded_previews
+from .config import APP_HOME, ASSET_DIR, IMPORT_DIR, PREPROCESS_VERSION, ensure_app_dirs
 from .db import Database
 from .native import export_library_photos, export_recent_photos
 
@@ -138,15 +140,19 @@ def import_library_benchmark_sample(db: Database, limit: int) -> int:
 def import_full_photos_library(db: Database) -> dict[str, Any]:
     ensure_app_dirs()
     output = IMPORT_DIR / "photos-full"
-    result = export_library_photos(output, 1_000_000, "all")
-    imported = import_photos_manifest(
-        db,
-        Path(result["manifest"]),
-        "apple-photos-full",
-        sampling_strategy="full-library-v1",
-        snapshot=result,
-    )
-    return {**result, "imported": imported}
+    with (APP_HOME / "worker.lock").open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = export_library_photos(output, 1_000_000, "all")
+        manifest = Path(result["manifest"])
+        imported = import_photos_manifest(
+            db,
+            manifest,
+            "apple-photos-full",
+            sampling_strategy="full-library-v1",
+            snapshot=result,
+        )
+        pruned = prune_superseded_previews(db.conn, output, manifest)
+    return {**result, "imported": imported, "pruned_previews": pruned}
 
 
 def export_photos_selection(limit: int) -> Path:

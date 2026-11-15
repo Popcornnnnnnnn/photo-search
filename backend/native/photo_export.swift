@@ -254,6 +254,7 @@ struct PhotoExporter {
             var failures = 0
             var failedIDs: [String] = []
             var regenerated = 0
+            let outputDir = output.resolvingSymlinksInPath().standardizedFileURL
 
             for asset in selected {
                 do {
@@ -265,20 +266,31 @@ struct PhotoExporter {
                     let oldDate = oldURL.flatMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate }
                     let legacyUnchanged = old?.modifiedAt == nil
                         && (asset.modificationDate.map { $0 <= (oldDate ?? .distantPast) } ?? true)
-                    let reusable = (old?.mediaType ?? "image") == (isVideo ? "video" : "image")
-                        && old != nil && (old?.modifiedAt == modifiedAt || legacyUnchanged)
+                    let sameKindAndSize = (old?.mediaType ?? "image") == (isVideo ? "video" : "image")
                         && old?.width == asset.pixelWidth && old?.height == asset.pixelHeight
-                        && oldURL.map { FileManager.default.fileExists(atPath: $0.path) } == true
+                    let oldRegularFile = oldURL.map { url in
+                        let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                        return values?.isRegularFile == true && values?.isSymbolicLink != true
+                    } == true
+                    let reusable = old != nil && sameKindAndSize && oldRegularFile
+                        && (old?.modifiedAt == modifiedAt || legacyUnchanged)
                     let version = stableID(modifiedAt ?? asset.creationDate.map { iso.string(from: $0) } ?? "original")
                     let filename = id + "-" + version.suffix(12) + ".jpg"
-                    let destination = reusable ? oldURL! : output.appendingPathComponent(filename)
-                    let thumbnail = destination
+                    var destination = reusable ? oldURL! : output.appendingPathComponent(filename)
                     if !reusable {
                         let image = try requestPreview(asset: asset, manager: manager)
                         let data = try jpegData(image, identifier: asset.localIdentifier)
-                        try data.write(to: thumbnail, options: .atomic)
-                        regenerated += 1
+                        if let oldURL, oldRegularFile, sameKindAndSize,
+                           oldURL.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL == outputDir,
+                           oldURL.pathExtension.lowercased() == "jpg",
+                           (try? Data(contentsOf: oldURL)) == data {
+                            destination = oldURL
+                        } else {
+                            try data.write(to: destination, options: .atomic)
+                            regenerated += 1
+                        }
                     }
+                    let thumbnail = destination
                     let record = ExportRecord(
                         id: id,
                         localIdentifier: asset.localIdentifier,
