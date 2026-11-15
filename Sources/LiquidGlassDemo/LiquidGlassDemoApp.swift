@@ -1,5 +1,5 @@
-import SwiftUI
 import AppKit
+import SwiftUI
 
 /// Entry point. Runs the normal windowed app, unless invoked with
 /// `--snapshot <path>`, in which case it renders `ContentView` to a PNG in-process
@@ -58,14 +58,14 @@ struct LiquidGlassDemoApp: App {
             ContentView()
                 // Room for the sidebars + a padded main column on all sides.
                 .frame(minWidth: 820, minHeight: 560)
-                // Empty title so macOS never flashes the executable name in the
-                // header on hover / when the window becomes key.
-                .navigationTitle("")
+                // Keep an accessible window name; the native toolbar hides its
+                // visual title and supplies the active page's controls instead.
+                .navigationTitle("Photo Search")
                 .environment(theme)
         }
-        // Transparent, full-size titlebar so the SwiftUI header strip becomes the
-        // header background (the default titlebar material otherwise shows through).
-        .windowStyle(.hiddenTitleBar)
+        // AppKit lays out the traffic lights and toolbar as one native row.
+        .windowStyle(.titleBar)
+        .windowToolbarStyle(.unified(showsTitle: false))
         .windowResizability(.contentMinSize)
         .defaultSize(width: 1180, height: 760)
         .defaultPosition(.center)
@@ -183,6 +183,20 @@ enum Snapshot {
         let store = ThemeStore()
         let nsAppearance = NSAppearance(named: dark ? .darkAqua : .aqua)
 
+        if view == "connection-model" || view == "connection-index" {
+            let issue: PhotoConnectionIssue = view == "connection-model" ? .model("Qwen 4090") : .index
+            let notice = PhotoConnectionNotice(issue: issue, isChecking: false, onRetry: {}, onSettings: {})
+                .padding(24)
+                .frame(maxWidth: 640)
+                .frame(maxWidth: .infinity, alignment: .bottom)
+                .frame(width: size.width)
+                .background(store.background)
+                .environment(store)
+                .environment(\.colorScheme, scheme)
+            PNGRenderer.write(notice, to: path, scale: 2, label: "connection notice", appearance: nsAppearance)
+            return
+        }
+
         if view == "about" {
             // The About panel at its intrinsic size (no window to match).
             let about = AboutView()
@@ -194,7 +208,28 @@ enum Snapshot {
             return
         }
 
-        let content = ContentView(windowMaterial: nil, showsOnboarding: false)
+        if view == "sidebar" {
+            // The library sidebar alone, at its default width, so the footer
+            // status can be checked without opening a window.
+            let sidebar = PhotoSidebar(store: PhotoSearchStore(),
+                                       activity: PhotoIndexActivityStore().activity,
+                                       ui: UIState(),
+                                       onRandomBrowse: {}, onReview: {})
+                .frame(width: Layout.leftSidebarWidth, height: size.height)
+                .background(store.background)
+                .environment(store)
+                .environment(\.colorScheme, scheme)
+            PNGRenderer.write(sidebar, to: path, scale: 2, label: "sidebar", appearance: nsAppearance)
+            return
+        }
+
+        let content = ContentView(
+            windowMaterial: nil,
+            showsOnboarding: false,
+            showsPointerEffects: false,
+            startsInLibrary: view == "library" || view == "indexing",
+            opensSettingsSection: view == "indexing" ? .indexing : nil
+        )
             .frame(width: size.width, height: size.height)
             .background(store.background)
             .environment(store)

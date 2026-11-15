@@ -310,8 +310,15 @@ enum PhotoSearchEngine {
             self.embeddings = embeddings
         }
         var cost: Int {
-            documents.reduce(0) { $0 + $1.searchText.utf8.count * 3 + ($1.annotationJSON?.utf8.count ?? 0) + 512 }
-                + (embeddings?.reduce(0) { $0 + $1.vector.count * 4 + 128 } ?? 0)
+            let documentCost = documents.reduce(0) { total, document in
+                let textCost = document.searchText.utf8.count * 3
+                let annotationCost = document.annotationJSON?.utf8.count ?? 0
+                return total + textCost + annotationCost + 512
+            }
+            let embeddingCost = embeddings?.reduce(0) { total, embedding in
+                total + embedding.vector.count * 4 + 128
+            } ?? 0
+            return documentCost + embeddingCost
         }
     }
     private final class Cache: @unchecked Sendable {

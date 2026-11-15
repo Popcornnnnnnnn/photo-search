@@ -165,9 +165,11 @@ private struct RotatingFitEffect: AnimatableModifier {
     }
 
     func body(content: Content) -> some View {
-        let radians = degrees * .pi / 180
-        let width = abs(imageSize.width * cos(radians)) + abs(imageSize.height * sin(radians))
-        let height = abs(imageSize.width * sin(radians)) + abs(imageSize.height * cos(radians))
+        let radians: Double = degrees * .pi / 180
+        let cosine: Double = cos(radians)
+        let sine: Double = sin(radians)
+        let width = abs(imageSize.width * CGFloat(cosine)) + abs(imageSize.height * CGFloat(sine))
+        let height = abs(imageSize.width * CGFloat(sine)) + abs(imageSize.height * CGFloat(cosine))
         let fit = min(canvasSize.width / max(width, 1), canvasSize.height / max(height, 1))
 
         content

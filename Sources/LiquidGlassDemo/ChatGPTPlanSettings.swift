@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Darwin
 
 struct ChatGPTAccount: Decodable, Identifiable, Sendable {
     var id: String
@@ -13,7 +14,7 @@ struct ChatGPTModel: Decodable, Identifiable, Sendable {
     var name: String
 }
 
-private struct ChatGPTEvent: Decodable, Sendable {
+struct ChatGPTEvent: Decodable, Sendable {
     var event: String?
     var url: String?
     var error: String?
@@ -26,9 +27,12 @@ private struct ChatGPTEvent: Decodable, Sendable {
 
 /// Pipes structured helper events directly to the app. OAuth URLs and credentials
 /// never go to the worker logs or the provider configuration file.
-private final class ChatGPTCommand: @unchecked Sendable {
+final class ChatGPTCommand: @unchecked Sendable {
     private let lock = NSLock()
     private var process: Process?
+    private let commandOverride: [String]?
+
+    init(command: [String]? = nil) { commandOverride = command }
 
     func cancel() {
         lock.lock(); defer { lock.unlock() }
@@ -41,10 +45,15 @@ private final class ChatGPTCommand: @unchecked Sendable {
     }
 
     func run(_ arguments: [String], authorize: @escaping @MainActor @Sendable (URL) -> Void) async throws -> ChatGPTEvent {
-        guard let encoder = PhotoEncoderCommand.resolve(), encoder.count >= 2 else {
-            throw Failure(message: "Photo Search backend is unavailable.")
+        let command: [String]
+        if let commandOverride {
+            command = commandOverride + arguments
+        } else {
+            guard let encoder = PhotoEncoderCommand.resolve(), encoder.count >= 2 else {
+                throw Failure(message: "Photo Search backend is unavailable.")
+            }
+            command = Array(encoder.dropLast()) + ["chatgpt"] + arguments
         }
-        let command = Array(encoder.dropLast()) + ["chatgpt"] + arguments
         return try await Task.detached { [self] in
             let child = Process()
             child.executableURL = URL(fileURLWithPath: command[0])
@@ -54,13 +63,25 @@ private final class ChatGPTCommand: @unchecked Sendable {
             child.standardError = FileHandle.nullDevice
             try child.run()
             setProcess(child)
-            defer { setProcess(nil) }
+            defer {
+                if child.isRunning { child.terminate() }
+                setProcess(nil)
+            }
             let decoder = JSONDecoder()
             decoder.keyDecodingStrategy = .convertFromSnakeCase
             var buffer = Data()
             var last: ChatGPTEvent?
-            while let data = try pipe.fileHandleForReading.read(upToCount: 4096), !data.isEmpty {
-                buffer.append(data)
+            var bytes = [UInt8](repeating: 0, count: 4096)
+            while true {
+                // Dispatch a short authorize event while the helper still waits
+                // for its browser callback; FileHandle's bounded read fills first.
+                let count = Darwin.read(pipe.fileHandleForReading.fileDescriptor, &bytes, bytes.count)
+                if count < 0, errno == EINTR { continue }
+                guard count >= 0 else {
+                    throw Failure(message: "ChatGPT helper output could not be read.")
+                }
+                if count == 0 { break }
+                buffer.append(contentsOf: bytes.prefix(count))
                 guard buffer.count <= 1_000_000 else {
                     child.terminate()
                     throw Failure(message: "ChatGPT returned an invalid helper response.")
