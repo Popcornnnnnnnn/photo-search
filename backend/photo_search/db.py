@@ -191,12 +191,35 @@ class Database:
     def upsert_asset(self, asset: dict[str, Any]) -> None:
         previous = self.get_asset(asset["id"])
         changed = previous is not None and previous["sha256"] != asset["sha256"]
+        previous_native_only = False
+        if changed and previous is not None:
+            try:
+                previous_meta = json.loads(previous["metadata_json"])
+            except Exception:
+                previous_meta = {}
+            has_non_native_annotation = (
+                self.conn.execute(
+                    """
+                    SELECT 1 FROM artifacts
+                    WHERE asset_id=? AND kind='annotation' AND is_active=1
+                      AND producer != 'apple-vision-native'
+                    LIMIT 1
+                    """,
+                    (asset["id"],),
+                ).fetchone()
+                is not None
+            )
+            previous_native_only = (
+                previous_meta.get("source") == "apple-vision-native"
+                and not has_non_native_annotation
+            )
         with self.transaction() as conn:
             if changed:
                 conn.execute("UPDATE artifacts SET is_active=0 WHERE asset_id=?", (asset["id"],))
                 conn.execute("UPDATE embeddings SET is_active=0 WHERE asset_id=?", (asset["id"],))
-                conn.execute("DELETE FROM search_docs WHERE asset_id=?", (asset["id"],))
-                conn.execute("DELETE FROM search_fts WHERE asset_id=?", (asset["id"],))
+                if not previous_native_only:
+                    conn.execute("DELETE FROM search_docs WHERE asset_id=?", (asset["id"],))
+                    conn.execute("DELETE FROM search_fts WHERE asset_id=?", (asset["id"],))
                 conn.execute("DELETE FROM processing_skips WHERE asset_id=?", (asset["id"],))
             elif previous and not previous["is_available"]:
                 conn.execute("DELETE FROM processing_skips WHERE asset_id=?", (asset["id"],))
@@ -315,6 +338,7 @@ class Database:
                 SELECT 1 FROM artifacts r
                 WHERE r.asset_id=a.id AND r.kind=? AND r.is_active=1
                   AND r.input_sha256=a.sha256
+                  AND NOT (r.kind='annotation' AND r.producer='apple-vision-native')
             )
             """
         ]
@@ -670,7 +694,11 @@ class Database:
         sql += " AND COALESCE(json_extract(a.metadata_json, '$.media_type'), 'image')=?"
         args: list[Any] = [namespace, model, revision, prompt, dimensions, media_type]
         if media_type == "video":
-            sql += " AND EXISTS (SELECT 1 FROM artifacts r WHERE r.asset_id=a.id AND r.kind='annotation' AND r.is_active=1 AND r.input_sha256=a.sha256)"
+            sql += (
+                " AND EXISTS (SELECT 1 FROM artifacts r WHERE r.asset_id=a.id"
+                " AND r.kind='annotation' AND r.is_active=1 AND r.input_sha256=a.sha256"
+                " AND r.producer != 'apple-vision-native')"
+            )
         if not count:
             sql += " ORDER BY a.captured_at DESC, a.imported_at DESC"
             if limit is not None:

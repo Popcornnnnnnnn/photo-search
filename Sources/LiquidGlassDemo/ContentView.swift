@@ -30,6 +30,7 @@ struct ContentView: View {
     @State private var connection = PhotoConnectionStore()
     @State private var indexActivity = PhotoIndexActivityStore()
     @State private var encoder: PhotoEncoderStore
+    @State private var nativeIndexer = NativeIndexerStore()
     @State private var landingQuery = ""
     @State private var hasEnteredSearch = false
     @State private var thumbnailContentMode: ContentMode = .fill
@@ -71,7 +72,7 @@ struct ContentView: View {
 
     var body: some View {
         appContent
-            .disabled(ui.showSettings)
+            .disabled(ui.showSettings || ui.showOnboarding)
             .toolbar { libraryToolbar }
             .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: hasEnteredSearch)
             .overlay {
@@ -82,16 +83,30 @@ struct ContentView: View {
                         beginSearch(entry.query, section: entry.section)
                     }
                         .transition(.opacity)
+                } else if ui.showOnboarding {
+                    OnboardingView(
+                        ui: ui,
+                        indexer: nativeIndexer,
+                        onProgress: {
+                            store.reload(showLoading: false, encoder: encoder)
+                        },
+                        onFinished: {
+                            store.reload(encoder: encoder)
+                            Task { await connection.refresh() }
+                        }
+                    )
+                        .transition(.opacity)
                 }
             }
             .animation(.easeInOut(duration: 0.18), value: ui.showSettings)
+            .animation(.easeInOut(duration: 0.18), value: ui.showOnboarding)
             // The encoder host also exits when its stdin closes, so a crash still
             // releases the model; this just makes the normal quit explicit.
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                 encoder.shutdown()
             }
             .overlay(alignment: .bottom) {
-                if let issue = connection.issue {
+                if !ui.showOnboarding, let issue = connection.issue {
                     PhotoConnectionNotice(issue: issue, isChecking: connection.isChecking) {
                         ModelProviderSettings.resumeWorker()
                         Task { await connection.refresh() }
@@ -132,6 +147,11 @@ struct ContentView: View {
                 store.reload(onlyIfChanged: true, encoder: encoder)
             }
             .task {
+                if showsPointerEffects,
+                   !ui.hasCompletedOnboarding,
+                   !FileManager.default.fileExists(atPath: PhotoSearchDatabase.path) {
+                    ui.showOnboarding = true
+                }
                 while !Task.isCancelled {
                     await connection.refresh()
                     try? await Task.sleep(for: .seconds(30))
@@ -173,7 +193,7 @@ struct ContentView: View {
                                         tooltip: ui.leftSidebarVisible ? "Hide sidebar" : "Show sidebar",
                                         isActive: ui.leftSidebarVisible) {
                         ui.leftSidebarVisible.toggle()
-                    }.disabled(ui.showSettings)
+                    }.disabled(ui.showSettings || ui.showOnboarding)
                 }
             }
             .customToolbarSurface()
@@ -205,13 +225,13 @@ struct ContentView: View {
             ToolbarItemGroup(placement: .primaryAction) {
                 ViewerToolbarButton(systemImage: "gearshape", tooltip: "Settings") {
                     ui.showSettings = true
-                }.disabled(ui.showSettings)
+                }.disabled(ui.showSettings || ui.showOnboarding)
                 if hasEnteredSearch {
                     ViewerToolbarButton(systemImage: "sidebar.right",
                                         tooltip: ui.rightSidebarVisible ? "Hide info" : "Show info",
                                         isActive: ui.rightSidebarVisible) {
                         ui.rightSidebarVisible.toggle()
-                    }.disabled(ui.showSettings)
+                    }.disabled(ui.showSettings || ui.showOnboarding)
                 }
             }
             .customToolbarSurface()
@@ -225,7 +245,7 @@ struct ContentView: View {
         }
         // Leave room for the field beside the date filter and view picker.
         .frame(minWidth: 380, idealWidth: 460, maxWidth: 520)
-        .disabled(ui.showSettings)
+        .disabled(ui.showSettings || ui.showOnboarding)
     }
 
     private var appContent: some View {
@@ -309,6 +329,12 @@ struct ContentView: View {
         }
     }
 
+    private var showsQuickIndex: Bool {
+        nativeIndexer.isBusy
+            || !FileManager.default.fileExists(atPath: PhotoSearchDatabase.path)
+            || (!store.isLoading && store.stats.indexed == 0)
+    }
+
     private var landingView: some View {
         ZStack {
             landingBackground
@@ -320,7 +346,10 @@ struct ContentView: View {
                 onSubmit: { beginSearch(landingQuery) },
                 onBrowse: { enterLibrary() },
                 onRandomBrowse: { randomBrowsePresented = true },
-                onSettings: { ui.showSettings = true }
+                onSettings: { ui.showSettings = true },
+                showsQuickIndex: showsQuickIndex,
+                isIndexing: nativeIndexer.isBusy,
+                onSetup: { ui.showOnboarding = true }
             )
             .padding(.horizontal, 48)
         }
@@ -446,9 +475,14 @@ struct ContentView: View {
                 PhotoGrid(store: store, encoder: encoder,
                           thumbnailContentMode: thumbnailContentMode,
                           scrollToPhotoID: libraryJumpID,
-                          scrollToken: libraryJumpToken) { photo in
-                    store.openViewer(for: photo)
-                }
+                          scrollToken: libraryJumpToken,
+                          onSelect: { photo in
+                              store.openViewer(for: photo)
+                          },
+                          onSetup: {
+                              returnToLanding()
+                              ui.showOnboarding = true
+                          })
             }
             .opacity(store.isViewerPresented ? 0 : 1)
             .allowsHitTesting(!store.isViewerPresented)
@@ -507,6 +541,7 @@ struct ContentView: View {
             theme.id = id
         case .search(let query, let section, let timeFilter):
             ui.showSettings = false
+            ui.showOnboarding = false
             randomBrowsePresented = false
             photoReviewPresented = false
             if query.isEmpty {
@@ -517,6 +552,7 @@ struct ContentView: View {
             }
         case .asset(let id):
             ui.showSettings = false
+            ui.showOnboarding = false
             randomBrowsePresented = false
             photoReviewPresented = false
             libraryJumpNotice = nil

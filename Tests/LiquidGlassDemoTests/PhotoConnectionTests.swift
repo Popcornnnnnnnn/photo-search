@@ -166,6 +166,20 @@ import Testing
             })
         #expect(issue == nil)
     }
+
+    @Test func cleanMacCheckSkipsMissingIndexUntilDatabaseExists() async {
+        let missing = await PhotoConnectionService.cleanMacCheck(databaseFileExists: false) {
+            Issue.record("Readable probe should not fail a clean Mac before DB creation")
+            return false
+        }
+        #expect(missing == nil)
+
+        let readable = await PhotoConnectionService.cleanMacCheck(databaseFileExists: true) { true }
+        #expect(readable == nil)
+
+        let corrupt = await PhotoConnectionService.cleanMacCheck(databaseFileExists: true) { false }
+        #expect(corrupt == .index)
+    }
 }
 
 private final class ConnectionTestProtocol: URLProtocol, @unchecked Sendable {

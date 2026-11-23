@@ -178,6 +178,89 @@ class CoreTests(unittest.TestCase):
                 db.upsert_asset({**base, "source_kind": "apple-photos-benchmark"})
                 self.assertEqual(db.get_asset("a1")["source_kind"], "apple-photos-full")
 
+    def test_native_baseline_is_queued_for_vlm_and_stays_searchable_during_upgrade(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            preview_native = root / "native.jpg"
+            preview_native.write_bytes(b"native-1024")
+            preview_full = root / "full.jpg"
+            preview_full.write_bytes(b"full-1600")
+            with Database(root / "test.sqlite3") as db:
+                db.upsert_asset({
+                    "id": "a1",
+                    "source_kind": "apple-photos-full",
+                    "source_identifier": "photos-1",
+                    "file_path": str(preview_native),
+                    "thumbnail_path": str(preview_native),
+                    "sha256": "native-sha",
+                    "filename": "IMG_1.JPG",
+                    "metadata": {"source": "apple-vision-native", "media_type": "image"},
+                })
+                db.add_artifact(
+                    asset_id="a1",
+                    kind="annotation",
+                    producer="apple-vision-native",
+                    model="apple-vision",
+                    prompt_version="native-v1",
+                    schema_version="v1",
+                    preprocess_version="native-jpeg-1024",
+                    input_sha256="native-sha",
+                    data={"asset_type": "document", "short_caption": "boarding pass tokyo"},
+                )
+                with db.transaction() as conn:
+                    conn.execute(
+                        "INSERT INTO search_docs(asset_id, asset_type, short_caption, search_text, updated_at) "
+                        "VALUES ('a1', 'document', 'boarding pass tokyo', 'boarding pass tokyo', '2026-11-24T00:00:00Z')"
+                    )
+                    conn.execute(
+                        "INSERT INTO search_fts(asset_id, search_text) VALUES ('a1', 'boarding pass tokyo')"
+                    )
+
+                # Native baseline is still eligible for first-time VLM annotation.
+                pending = db.assets_missing_active_artifact(kind="annotation")
+                self.assertEqual([row["id"] for row in pending], ["a1"])
+
+                # Upgrading preview resolution via Python worker preserves native search docs until VLM runs.
+                db.upsert_asset({
+                    "id": "a1",
+                    "source_kind": "apple-photos-full",
+                    "source_identifier": "photos-1",
+                    "file_path": str(preview_full),
+                    "thumbnail_path": str(preview_full),
+                    "sha256": "full-sha",
+                    "filename": "IMG_1.JPG",
+                    "metadata": {"media_type": "image"},
+                })
+                self.assertEqual(len(db.search_docs()), 1)
+                self.assertEqual(search(db, "boarding pass", expand=False)["results"][0]["asset_id"], "a1")
+
+                # Once VLM annotates the asset, it disappears from pending_annotation.
+                db.add_artifact(
+                    asset_id="a1",
+                    kind="annotation",
+                    producer="qwen-vlm",
+                    model="qwen3.8-27b-fp8",
+                    prompt_version="p1",
+                    schema_version="1",
+                    preprocess_version="full",
+                    input_sha256="full-sha",
+                    data={"asset_type": "document", "short_caption": "Tokyo boarding pass"},
+                )
+                self.assertEqual(db.assets_missing_active_artifact(kind="annotation"), [])
+
+                # Subsequent edit of a VLM-annotated asset still invalidates stale search_docs.
+                db.upsert_asset({
+                    "id": "a1",
+                    "source_kind": "apple-photos-full",
+                    "source_identifier": "photos-1",
+                    "file_path": str(preview_full),
+                    "thumbnail_path": str(preview_full),
+                    "sha256": "edited-sha",
+                    "filename": "IMG_1.JPG",
+                    "metadata": {"media_type": "image"},
+                })
+                self.assertEqual(db.search_docs(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

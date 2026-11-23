@@ -1,83 +1,273 @@
+import AppKit
+import Photos
 import SwiftUI
 
-/// First-run welcome panel, shown once at launch (see `UIState.showOnboarding`).
-/// Completing persists via `UIState.completeOnboarding()` so it never shows
-/// again; Debug ▸ Reset Onboarding brings it back. Styling mirrors the settings
-/// modal — this is the template's "show once" flow pattern.
+/// First-run setup wizard guiding clean Macs through Photos access and
+/// zero-terminal Vision indexing. Can also be reopened from the landing screen
+/// via "Quick Index". Styling mirrors the modal shell used across the app.
 struct OnboardingView: View {
     @Bindable var ui: UIState
+    let indexer: NativeIndexerStore?
+    let onProgress: (@MainActor @Sendable () -> Void)?
+    let onFinished: (() -> Void)?
 
     @Environment(ThemeStore.self) private var theme
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var ownedIndexer = NativeIndexerStore()
+
+    init(
+        ui: UIState,
+        indexer: NativeIndexerStore? = nil,
+        onProgress: (@MainActor @Sendable () -> Void)? = nil,
+        onFinished: (() -> Void)? = nil
+    ) {
+        self.ui = ui
+        self.indexer = indexer
+        self.onProgress = onProgress
+        self.onFinished = onFinished
+    }
+
+    private var activeIndexer: NativeIndexerStore {
+        indexer ?? ownedIndexer
+    }
 
     var body: some View {
         ZStack {
             Color.black.opacity(0.55)
                 .ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                AppIconView()
-                    .scaleEffect(72 / 1024)
-                    .frame(width: 72, height: 72)
-                    .padding(.bottom, 16)
+            VStack(alignment: .leading, spacing: 18) {
+                header
 
-                Text(L10n.welcomeTitle)
-                    .font(Typography.title)
-                    .foregroundStyle(theme.textPrimary)
-                    .padding(.bottom, 6)
-                Text(L10n.welcomeSubtitle)
-                    .font(Typography.caption)
-                    .foregroundStyle(theme.textSecondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.bottom, 20)
+                stepCard(
+                    number: "1",
+                    title: "Connect Apple Photos (read-only)",
+                    subtitle: "Photo Search reads your library on this Mac to index text, scenes, and videos locally."
+                ) {
+                    HStack(spacing: 10) {
+                        Label(activeIndexer.authorizationLabel, systemImage: authIcon)
+                            .font(Typography.control)
+                            .foregroundStyle(activeIndexer.isAuthorized ? Color.green : theme.textSecondary)
 
-                VStack(alignment: .leading, spacing: 12) {
-                    feature("paintpalette", L10n.onboardingThemes)
-                    feature("menubar.rectangle", L10n.onboardingMenuBar)
-                    feature("arrow.triangle.2.circlepath", L10n.onboardingUpdates)
+                        Spacer()
+
+                        if activeIndexer.authorizationStatus == .denied
+                            || activeIndexer.authorizationStatus == .restricted {
+                            Button("Open Privacy Settings") {
+                                openPhotosPrivacySettings()
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .pointerStyle(.link)
+                        } else if !activeIndexer.isAuthorized {
+                            Button("Grant Photos Access") {
+                                Task { await activeIndexer.requestAuthorization() }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(theme.accent)
+                            .controlSize(.small)
+                            .pointerStyle(.link)
+                        }
+                    }
                 }
-                .padding(.bottom, 22)
 
-                Button(L10n.getStarted) { ui.completeOnboarding() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(theme.accent)
-                    .controlSize(.large)
-                    .focusEffectDisabled()
-                    .pointerStyle(.link)
-                    .keyboardShortcut(.defaultAction)
+                stepCard(
+                    number: "2",
+                    title: "Build Local Search Index (no terminal required)",
+                    subtitle: "Runs on-device with Apple Vision OCR & classification. Existing Qwen/VLM annotations are never overwritten."
+                ) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 10) {
+                            Button("Index Recent 200") {
+                                activeIndexer.startIndexing(limit: 200, onProgressBatch: onProgress)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(theme.accent)
+                            .controlSize(.regular)
+                            .disabled(activeIndexer.isBusy)
+                            .pointerStyle(.link)
+
+                            Button("Index Full Library") {
+                                activeIndexer.startIndexing(limit: nil, onProgressBatch: onProgress)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.regular)
+                            .disabled(activeIndexer.isBusy)
+                            .pointerStyle(.link)
+
+                            Spacer()
+
+                            if activeIndexer.isIndexing {
+                                Button("Stop") {
+                                    activeIndexer.stopIndexing()
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .pointerStyle(.link)
+                            }
+                        }
+
+                        if activeIndexer.isIndexing || activeIndexer.processedCount > 0 {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ProgressView(
+                                    value: Double(activeIndexer.processedCount),
+                                    total: Double(max(1, activeIndexer.totalCount))
+                                )
+                                .progressViewStyle(.linear)
+                                .tint(theme.accent)
+
+                                HStack {
+                                    Text(activeIndexer.statusMessage)
+                                        .font(Typography.footnote)
+                                        .foregroundStyle(theme.textSecondary)
+                                        .lineLimit(1)
+                                    Spacer()
+                                    if activeIndexer.totalCount > 0 {
+                                        Text("\(activeIndexer.processedCount.formatted()) / \(activeIndexer.totalCount.formatted())")
+                                            .font(Typography.footnote)
+                                            .foregroundStyle(theme.textSecondary)
+                                            .monospacedDigit()
+                                    }
+                                }
+                            }
+                        }
+
+                        if let error = activeIndexer.lastError {
+                            Text(error)
+                                .font(Typography.footnote)
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+
+                stepCard(
+                    number: "3",
+                    title: "Optional Upgrades",
+                    subtitle: "Connect a VLM in Settings → Models for rich descriptions, enable Qwen3-VL-Embedding-2B visual search in Settings → Visual Search when installed, or search from Raycast via sp and sv."
+                ) {
+                    EmptyView()
+                }
+
+                HStack {
+                    Button("Skip for Now") { finish() }
+                        .buttonStyle(.plain)
+                        .font(Typography.control)
+                        .foregroundStyle(theme.textSecondary)
+                        .pointerStyle(.link)
+
+                    Spacer()
+
+                    Button("Start Searching") { finish() }
+                        .buttonStyle(.borderedProminent)
+                        .tint(theme.accent)
+                        .controlSize(.large)
+                        .focusEffectDisabled()
+                        .pointerStyle(.link)
+                        .keyboardShortcut(.defaultAction)
+                }
+                .padding(.top, 4)
             }
-            .padding(32)
-            .frame(width: 460)
+            .padding(28)
+            .frame(width: 560)
             .background(theme.panel)
             .clipShape(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
             .themedBorder(Radius.panel)
-            // Esc completes too (same as the button) — dismissing without
-            // completing would resurface the panel on every launch.
+            .shadow(color: .black.opacity(0.32), radius: 28, y: 12)
+            // Esc completes too so dismissing without clicking Start Searching
+            // does not leave the modal stuck open on relaunch.
             .background {
-                Button("Close") { ui.completeOnboarding() }
+                Button("Close") { finish() }
                     .keyboardShortcut(.cancelAction)
                     .hidden()
             }
         }
         .pointerStyle(.default)
+        .task {
+            activeIndexer.refreshAuthorization()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                activeIndexer.refreshAuthorization()
+            }
+        }
     }
 
-    private func feature(_ icon: String, _ text: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(Typography.iconLarge)
-                .foregroundStyle(theme.accent)
-                .frame(width: 22)
-            Text(text)
-                .font(Typography.body)
-                .foregroundStyle(theme.textPrimary)
+    private var header: some View {
+        HStack(spacing: 14) {
+            AppIconView()
+                .scaleEffect(56 / 1024)
+                .frame(width: 56, height: 56)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Welcome to Photo Search")
+                    .font(Typography.title)
+                    .foregroundStyle(theme.textPrimary)
+                Text("Private, 100% local search across your Apple Photos & Videos and Raycast.")
+                    .font(Typography.caption)
+                    .foregroundStyle(theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .accessibilityElement(children: .combine)
+        .padding(.bottom, 2)
+    }
+
+    private var authIcon: String {
+        switch activeIndexer.authorizationStatus {
+        case .authorized, .limited: "checkmark.circle.fill"
+        case .denied, .restricted: "exclamationmark.triangle.fill"
+        default: "photo.badge.plus"
+        }
+    }
+
+    private func stepCard<Actions: View>(
+        number: String,
+        title: String,
+        subtitle: String,
+        @ViewBuilder actions: () -> Actions
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Text(number)
+                    .font(Typography.control)
+                    .foregroundStyle(theme.accent)
+                    .frame(width: 22, height: 22)
+                    .background(theme.accent.opacity(0.14), in: Circle())
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(Typography.label)
+                        .foregroundStyle(theme.textPrimary)
+                    Text(subtitle)
+                        .font(Typography.caption)
+                        .foregroundStyle(theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            actions()
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.background.opacity(0.55), in: RoundedRectangle(cornerRadius: Radius.content))
+        .themedBorder(Radius.content)
+    }
+
+    private func finish() {
+        ui.completeOnboarding()
+        onFinished?()
+    }
+
+    private func openPhotosPrivacySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Photos") else {
+            return
+        }
+        NSWorkspace.shared.open(url)
     }
 }
 
 #Preview {
     OnboardingView(ui: UIState())
-        .frame(width: 800, height: 600)
+        .frame(width: 800, height: 680)
         .environment(ThemeStore())
 }
