@@ -12,6 +12,7 @@ struct OnboardingView: View {
     let onFinished: (() -> Void)?
 
     @Environment(ThemeStore.self) private var theme
+    @Environment(\.scenePhase) private var scenePhase
     @State private var ownedIndexer = NativeIndexerStore()
 
     init(
@@ -83,7 +84,7 @@ struct OnboardingView: View {
                             .buttonStyle(.borderedProminent)
                             .tint(theme.accent)
                             .controlSize(.regular)
-                            .disabled(activeIndexer.isIndexing)
+                            .disabled(activeIndexer.isBusy)
                             .pointerStyle(.link)
 
                             Button("Index Full Library") {
@@ -91,7 +92,7 @@ struct OnboardingView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.regular)
-                            .disabled(activeIndexer.isIndexing)
+                            .disabled(activeIndexer.isBusy)
                             .pointerStyle(.link)
 
                             Spacer()
@@ -143,7 +144,7 @@ struct OnboardingView: View {
                 stepCard(
                     number: "3",
                     title: "Optional Upgrades",
-                    subtitle: "Connect a VLM in Settings → Models for rich descriptions, download Qwen3-VL-Embedding-2B (4.6 GB) in Settings → Visual Search, or search from Raycast via sp and sv."
+                    subtitle: "Connect a VLM in Settings → Models for rich descriptions, enable Qwen3-VL-Embedding-2B visual search in Settings → Visual Search when installed, or search from Raycast via sp and sv."
                 ) {
                     EmptyView()
                 }
@@ -184,6 +185,11 @@ struct OnboardingView: View {
         .pointerStyle(.default)
         .task {
             activeIndexer.refreshAuthorization()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                activeIndexer.refreshAuthorization()
+            }
         }
     }
 

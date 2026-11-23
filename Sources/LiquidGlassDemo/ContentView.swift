@@ -193,7 +193,7 @@ struct ContentView: View {
                                         tooltip: ui.leftSidebarVisible ? "Hide sidebar" : "Show sidebar",
                                         isActive: ui.leftSidebarVisible) {
                         ui.leftSidebarVisible.toggle()
-                    }.disabled(ui.showSettings)
+                    }.disabled(ui.showSettings || ui.showOnboarding)
                 }
             }
             .customToolbarSurface()
@@ -225,13 +225,13 @@ struct ContentView: View {
             ToolbarItemGroup(placement: .primaryAction) {
                 ViewerToolbarButton(systemImage: "gearshape", tooltip: "Settings") {
                     ui.showSettings = true
-                }.disabled(ui.showSettings)
+                }.disabled(ui.showSettings || ui.showOnboarding)
                 if hasEnteredSearch {
                     ViewerToolbarButton(systemImage: "sidebar.right",
                                         tooltip: ui.rightSidebarVisible ? "Hide info" : "Show info",
                                         isActive: ui.rightSidebarVisible) {
                         ui.rightSidebarVisible.toggle()
-                    }.disabled(ui.showSettings)
+                    }.disabled(ui.showSettings || ui.showOnboarding)
                 }
             }
             .customToolbarSurface()
@@ -245,7 +245,7 @@ struct ContentView: View {
         }
         // Leave room for the field beside the date filter and view picker.
         .frame(minWidth: 380, idealWidth: 460, maxWidth: 520)
-        .disabled(ui.showSettings)
+        .disabled(ui.showSettings || ui.showOnboarding)
     }
 
     private var appContent: some View {
@@ -329,6 +329,12 @@ struct ContentView: View {
         }
     }
 
+    private var showsQuickIndex: Bool {
+        nativeIndexer.isBusy
+            || !FileManager.default.fileExists(atPath: PhotoSearchDatabase.path)
+            || (!store.isLoading && store.stats.indexed == 0)
+    }
+
     private var landingView: some View {
         ZStack {
             landingBackground
@@ -341,6 +347,8 @@ struct ContentView: View {
                 onBrowse: { enterLibrary() },
                 onRandomBrowse: { randomBrowsePresented = true },
                 onSettings: { ui.showSettings = true },
+                showsQuickIndex: showsQuickIndex,
+                isIndexing: nativeIndexer.isBusy,
                 onSetup: { ui.showOnboarding = true }
             )
             .padding(.horizontal, 48)
@@ -467,9 +475,14 @@ struct ContentView: View {
                 PhotoGrid(store: store, encoder: encoder,
                           thumbnailContentMode: thumbnailContentMode,
                           scrollToPhotoID: libraryJumpID,
-                          scrollToken: libraryJumpToken) { photo in
-                    store.openViewer(for: photo)
-                }
+                          scrollToken: libraryJumpToken,
+                          onSelect: { photo in
+                              store.openViewer(for: photo)
+                          },
+                          onSetup: {
+                              returnToLanding()
+                              ui.showOnboarding = true
+                          })
             }
             .opacity(store.isViewerPresented ? 0 : 1)
             .allowsHitTesting(!store.isViewerPresented)
@@ -528,6 +541,7 @@ struct ContentView: View {
             theme.id = id
         case .search(let query, let section, let timeFilter):
             ui.showSettings = false
+            ui.showOnboarding = false
             randomBrowsePresented = false
             photoReviewPresented = false
             if query.isEmpty {
@@ -538,6 +552,7 @@ struct ContentView: View {
             }
         case .asset(let id):
             ui.showSettings = false
+            ui.showOnboarding = false
             randomBrowsePresented = false
             photoReviewPresented = false
             libraryJumpNotice = nil

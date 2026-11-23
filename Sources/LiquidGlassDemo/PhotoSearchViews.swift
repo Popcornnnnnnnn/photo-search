@@ -379,6 +379,8 @@ struct PhotoLandingSearchView: View {
     let onBrowse: () -> Void
     let onRandomBrowse: () -> Void
     let onSettings: () -> Void
+    var showsQuickIndex: Bool = false
+    var isIndexing: Bool = false
     var onSetup: (() -> Void)? = nil
 
     @FocusState private var focused: Bool
@@ -430,10 +432,10 @@ struct PhotoLandingSearchView: View {
                     systemImage: "slider.horizontal.3",
                     action: onSettings
                 )
-                if indexedCount == 0, let onSetup {
+                if showsQuickIndex, let onSetup {
                     LandingEntryButton(
-                        title: "Quick Index",
-                        systemImage: "sparkles",
+                        title: isIndexing ? "Indexing…" : "Quick Index",
+                        systemImage: isIndexing ? "arrow.triangle.2.circlepath" : "sparkles",
                         action: onSetup
                     )
                 }
@@ -751,6 +753,7 @@ struct PhotoGrid: View {
     var scrollToPhotoID: String? = nil
     var scrollToken = 0
     let onSelect: (IndexedPhoto) -> Void
+    var onSetup: (() -> Void)? = nil
 
     private let columns = [GridItem(.adaptive(minimum: 210, maximum: 280), spacing: 10)]
 
@@ -812,9 +815,22 @@ struct PhotoGrid: View {
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
                 }
             } else if let error = store.errorMessage {
-                ContentUnavailableView("Unable to open the photo index",
-                                       systemImage: "exclamationmark.triangle",
-                                       description: Text(error))
+                if !FileManager.default.fileExists(atPath: PhotoSearchDatabase.path), let onSetup {
+                    ContentUnavailableView {
+                        Label("No photos indexed yet", systemImage: "photo.on.rectangle.angled")
+                    } description: {
+                        Text("Index your Apple Photos library locally to start searching without configuring a remote model.")
+                    } actions: {
+                        Button("Quick Index", action: onSetup)
+                            .buttonStyle(.borderedProminent)
+                            .tint(theme.accent)
+                            .pointerStyle(.link)
+                    }
+                } else {
+                    ContentUnavailableView("Unable to open the photo index",
+                                           systemImage: "exclamationmark.triangle",
+                                           description: Text(error))
+                }
             } else if store.photos.isEmpty {
                 if let details = store.searchNotice {
                     ContentUnavailableView {

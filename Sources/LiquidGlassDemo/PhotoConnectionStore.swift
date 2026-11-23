@@ -59,12 +59,24 @@ enum PhotoConnectionService {
             atPath: ModelProviderSettings.configurationURL.path
         )
         if !hasCustomProviderConfig, PhotoWorkerStatus.snapshot() == nil {
-            return await PhotoSearchDatabase.isAvailable() ? nil : .index
+            let dbFileExists = FileManager.default.fileExists(atPath: PhotoSearchDatabase.path)
+            return await cleanMacCheck(
+                databaseFileExists: dbFileExists,
+                databaseReadable: { await PhotoSearchDatabase.isAvailable() }
+            )
         }
         let configuration = ModelProviderSettings.loadConfiguration()
         let provider = configuration.effectiveProvider(worker: PhotoWorkerStatus.snapshot()) ?? .qwen4090
         return try await check(index: { await PhotoSearchDatabase.isAvailable() }, provider: provider,
                                session: .shared)
+    }
+
+    static func cleanMacCheck(
+        databaseFileExists: Bool,
+        databaseReadable: @Sendable () async -> Bool
+    ) async -> PhotoConnectionIssue? {
+        guard databaseFileExists else { return nil }
+        return await databaseReadable() ? nil : .index
     }
 
     static func check(index: @Sendable () async -> Bool, provider: ModelProviderProfile,

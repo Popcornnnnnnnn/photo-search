@@ -10,6 +10,7 @@ enum PhotoSearchIndex {
 
         init(path: String) throws {
             var configuration = Configuration()
+            configuration.busyMode = .timeout(5.0)
             configuration.prepareDatabase { db in
                 try db.execute(sql: "PRAGMA query_only = ON")
             }

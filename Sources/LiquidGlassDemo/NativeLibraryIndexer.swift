@@ -1,4 +1,5 @@
 import AppKit
+import CoreML
 import CryptoKit
 import Darwin
 import Foundation
@@ -9,8 +10,8 @@ import Vision
 
 extension PhotoSearchDatabase {
     /// Creates or migrates the local SQLite index so a clean Mac can start indexing
-    /// immediately without running Python setup scripts. Schema matches
-    /// `backend/photo_search/db.py` at `PRAGMA user_version = 2`.
+    /// immediately without running Python setup scripts. Schema and migrations match
+    /// `backend/photo_search/db.py` (`PRAGMA user_version = 2`).
     static func ensureSchema(
         at path: String = PhotoSearchDatabase.path,
         previewsDirectory: URL? = nil
@@ -131,13 +132,53 @@ extension PhotoSearchDatabase {
 
             let version = try Int.fetchOne(db, sql: "PRAGMA user_version") ?? 0
             if version < 2 {
-                let ftsEmpty = try Int.fetchOne(db, sql: "SELECT 1 FROM search_fts LIMIT 1") == nil
-                if ftsEmpty {
-                    try db.execute(sql: """
-                        INSERT INTO search_fts(asset_id, search_text)
-                        SELECT asset_id, search_text FROM search_docs
-                        """)
+                if version < 1 {
+                    let assetColumns = Set(
+                        try Row.fetchAll(db, sql: "PRAGMA table_info(assets)")
+                            .map { ($0["name"] as String) }
+                    )
+                    if !assetColumns.contains("is_available") {
+                        try db.execute(
+                            sql: "ALTER TABLE assets ADD COLUMN is_available INTEGER NOT NULL DEFAULT 1"
+                        )
+                    }
+
+                    let embeddingColumns = Set(
+                        try Row.fetchAll(db, sql: "PRAGMA table_info(embeddings)")
+                            .map { ($0["name"] as String) }
+                    )
+                    if !embeddingColumns.contains("input_sha256") {
+                        try db.execute(sql: "ALTER TABLE embeddings RENAME TO embeddings_legacy")
+                        try db.execute(sql: """
+                            CREATE TABLE embeddings (
+                                asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                                namespace TEXT NOT NULL,
+                                model TEXT NOT NULL,
+                                model_revision TEXT NOT NULL DEFAULT '',
+                                prompt_version TEXT NOT NULL DEFAULT '',
+                                input_sha256 TEXT NOT NULL,
+                                dimensions INTEGER NOT NULL,
+                                vector BLOB NOT NULL,
+                                created_at TEXT NOT NULL,
+                                is_active INTEGER NOT NULL DEFAULT 1,
+                                PRIMARY KEY(asset_id, namespace, model, model_revision, prompt_version, input_sha256)
+                            )
+                            """)
+                        try db.execute(sql: """
+                            INSERT INTO embeddings
+                            SELECT e.asset_id, e.namespace, e.model, e.model_revision, e.prompt_version,
+                                   a.sha256, e.dimensions, e.vector, e.created_at, e.is_active
+                            FROM embeddings_legacy e JOIN assets a ON a.id = e.asset_id
+                            """)
+                        try db.execute(sql: "DROP TABLE embeddings_legacy")
+                    }
                 }
+
+                try db.execute(sql: "DELETE FROM search_fts")
+                try db.execute(sql: """
+                    INSERT INTO search_fts(asset_id, search_text)
+                    SELECT asset_id, search_text FROM search_docs
+                    """)
                 try db.execute(sql: "PRAGMA user_version = 2")
             }
         }
@@ -184,22 +225,67 @@ enum NativeVisionAnalyzer {
             throw NativeIndexerError.invalidImage
         }
 
-        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-        let textRequest = VNRecognizeTextRequest()
-        textRequest.recognitionLevel = .accurate
-        textRequest.usesLanguageCorrection = true
-        let supportedLanguages = (try? textRequest.supportedRecognitionLanguages()) ?? []
+        let orientation = cgImageOrientation(from: source)
+        let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation, options: [:])
+        let textRequest = makeTextRequest(level: .accurate, cpuOnly: false)
+        do {
+            try handler.perform([textRequest])
+        } catch {
+            // Virtualized or headless runners without Metal/ANE can fail on GPU/ANE
+            // text recognition; retry on CPU before reporting failure.
+            let cpuFallback = makeTextRequest(level: .fast, cpuOnly: true)
+            try handler.perform([cpuFallback])
+            return NativeVisionResult(
+                ocrText: extractOCRText(from: cpuFallback),
+                labels: classifyBestEffort(handler: handler)
+            )
+        }
+
+        return NativeVisionResult(
+            ocrText: extractOCRText(from: textRequest),
+            labels: classifyBestEffort(handler: handler)
+        )
+    }
+
+    private static func cgImageOrientation(from source: CGImageSource) -> CGImagePropertyOrientation {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let rawValue = properties[kCGImagePropertyOrientation] as? UInt32,
+              let orientation = CGImagePropertyOrientation(rawValue: rawValue) else {
+            return .up
+        }
+        return orientation
+    }
+
+    private static func makeTextRequest(
+        level: VNRequestTextRecognitionLevel,
+        cpuOnly: Bool
+    ) -> VNRecognizeTextRequest {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = level
+        request.usesLanguageCorrection = level == .accurate
+        if cpuOnly,
+           let cpuDevice = MLComputeDevice.allComputeDevices.first(where: {
+               if case .cpu = $0 { return true }
+               return false
+           }) {
+            request.setComputeDevice(cpuDevice, for: .main)
+        }
+        let supportedLanguages = (try? request.supportedRecognitionLanguages()) ?? []
         let preferredLanguages = ["zh-Hans", "zh-Hant", "en-US"].filter { supportedLanguages.contains($0) }
         if !preferredLanguages.isEmpty {
-            textRequest.recognitionLanguages = preferredLanguages
+            request.recognitionLanguages = preferredLanguages
         }
-        try handler.perform([textRequest])
+        return request
+    }
 
-        let ocrLines = (textRequest.results ?? [])
+    private static func extractOCRText(from request: VNRecognizeTextRequest) -> String {
+        let lines = (request.results ?? [])
             .compactMap { $0.topCandidates(1).first?.string.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        let ocrText = ocrLines.joined(separator: "\n")
+        return lines.joined(separator: "\n")
+    }
 
+    private static func classifyBestEffort(handler: VNImageRequestHandler) -> [String] {
         let classifyRequest = VNClassifyImageRequest()
         try? handler.perform([classifyRequest])
         var seenLabels = Set<String>()
@@ -216,8 +302,7 @@ enum NativeVisionAnalyzer {
                 return cleaned
             }
             .prefix(10)
-
-        return NativeVisionResult(ocrText: ocrText, labels: Array(labels))
+        return Array(labels)
     }
 }
 
@@ -227,6 +312,12 @@ enum NativeLibraryIndexer {
     static let promptVersion = "native-v1"
     static let schemaVersion = "v1"
     static let preprocessVersion = "native-jpeg-1024"
+
+    private static let documentTokens: Set<String> = [
+        "document", "documents", "receipt", "receipts", "screenshot", "screenshots",
+        "text", "page", "pages", "form", "forms", "invoice", "invoices",
+        "paper", "signage", "whiteboard"
+    ]
 
     static func defaultPreviewsDirectory(databasePath: String = PhotoSearchDatabase.path) -> URL {
         URL(fileURLWithPath: databasePath)
@@ -248,10 +339,11 @@ enum NativeLibraryIndexer {
         if isVideo { return "video" }
         if isScreenshot { return "ui_screenshot" }
 
-        let lowered = labels.map { $0.lowercased() }
-        let documentHint = lowered.contains { label in
-            label.contains("document") || label.contains("receipt") || label.contains("screenshot")
-                || label.contains("text") || label.contains("sign") || label.contains("page")
+        let documentHint = labels.contains { label in
+            let tokens = label.lowercased()
+                .split { !$0.isLetter && !$0.isNumber }
+                .map(String.init)
+            return tokens.contains { documentTokens.contains($0) }
         }
         let trimmedOCR = ocrText.trimmingCharacters(in: .whitespacesAndNewlines)
         if documentHint || trimmedOCR.count >= 24 {
@@ -308,8 +400,8 @@ enum NativeLibraryIndexer {
         var seen = Set<String>()
         func append(_ value: String?) {
             guard let value else { return }
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, seen.insert(trimmed.lowercased()).inserted else { return }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !trimmed.isEmpty, seen.insert(trimmed).inserted else { return }
             parts.append(trimmed)
         }
 
@@ -325,9 +417,15 @@ enum NativeLibraryIndexer {
     }
 
     /// Indexes one JPEG preview into `photo-search.sqlite3` using Apple Vision OCR +
-    /// classification. Strictly skips any asset that already exists in `search_docs`
-    /// or has an active non-native annotation so richer Qwen/VLM records are never
-    /// overwritten. Returns `true` if newly indexed, `false` if skipped.
+    /// classification.
+    ///
+    /// - Strictly skips any asset that already exists in `search_docs` or owns an
+    ///   active non-native `annotation` artifact.
+    /// - If an `assets` row already exists (e.g. Python imported the asset and computed
+    ///   embeddings/checkpoints prior to VLM annotation), preserves the existing
+    ///   `assets` row (`sha256`, preview path, and `metadata_json`) and binds the native
+    ///   artifact to `existingAsset.sha256` without writing a duplicate preview file.
+    /// - Returns `true` if newly indexed, `false` if skipped.
     @discardableResult
     static func indexImageData(
         _ jpegData: Data,
@@ -351,43 +449,17 @@ enum NativeLibraryIndexer {
             if ownsQueue { try? queue.close() }
         }
 
-        let alreadyIndexedOrAnnotated = try queue.read { db in
-            if try Int.fetchOne(
-                db,
-                sql: "SELECT 1 FROM search_docs WHERE asset_id = ? LIMIT 1",
-                arguments: [metadata.assetID]
-            ) != nil {
-                return true
-            }
-            return try Int.fetchOne(
-                db,
-                sql: """
-                    SELECT 1 FROM artifacts
-                    WHERE asset_id = ? AND kind = 'annotation' AND is_active = 1
-                      AND producer != ?
-                    LIMIT 1
-                    """,
-                arguments: [metadata.assetID, producer]
-            ) != nil
+        // Fast pre-check before running Vision OCR/classification.
+        let alreadyHandled = try queue.read { db in
+            try assetShouldSkip(db, assetID: metadata.assetID)
         }
-        if alreadyIndexedOrAnnotated {
+        if alreadyHandled {
             return false
         }
 
         let vision = try NativeVisionAnalyzer.analyze(imageData: jpegData)
         let digest = SHA256.hash(data: jpegData)
-        let sha256 = digest.map { String(format: "%02x", $0) }.joined()
-
-        let fm = FileManager.default
-        try fm.createDirectory(
-            at: resolvedPreviewsDir,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        let safeFileBase = sanitizedFilenameComponent(metadata.assetID)
-        let previewURL = resolvedPreviewsDir.appendingPathComponent("\(safeFileBase).jpg")
-        try jpegData.write(to: previewURL, options: .atomic)
-        _ = Darwin.chmod(previewURL.path, 0o600)
+        let previewSHA256 = digest.map { String(format: "%02x", $0) }.joined()
 
         let assetType = classifyAssetType(
             isVideo: metadata.isVideo,
@@ -450,91 +522,136 @@ enum NativeLibraryIndexer {
         )
         let annotationJSON = String(decoding: annotationJSONData, as: UTF8.self)
 
-        try queue.write { db in
-            // Re-check inside write transaction to guard against concurrent writers.
-            if try Int.fetchOne(
-                db,
-                sql: "SELECT 1 FROM search_docs WHERE asset_id = ? LIMIT 1",
-                arguments: [metadata.assetID]
-            ) != nil {
-                return
+        var writtenPreviewURL: URL?
+        do {
+            var didInsert = false
+            try queue.write { db in
+                // Re-check both guards inside the serialized write transaction (zero TOCTOU).
+                if try assetShouldSkip(db, assetID: metadata.assetID) {
+                    return
+                }
+
+                let existingAssetSHA = try String.fetchOne(
+                    db,
+                    sql: "SELECT sha256 FROM assets WHERE id = ? LIMIT 1",
+                    arguments: [metadata.assetID]
+                )
+
+                let inputSHA256: String
+                if let existingAssetSHA {
+                    // Preserve existing Python-imported preview, sha256, and video metadata
+                    // so embeddings and checkpoints stay valid.
+                    inputSHA256 = existingAssetSHA
+                } else {
+                    inputSHA256 = previewSHA256
+                    let fm = FileManager.default
+                    try fm.createDirectory(
+                        at: resolvedPreviewsDir,
+                        withIntermediateDirectories: true,
+                        attributes: [.posixPermissions: 0o700]
+                    )
+                    let safeFileBase = sanitizedFilenameComponent(metadata.assetID)
+                    let previewURL = resolvedPreviewsDir.appendingPathComponent("\(safeFileBase).jpg")
+                    try jpegData.write(to: previewURL, options: .atomic)
+                    _ = Darwin.chmod(previewURL.path, 0o600)
+                    writtenPreviewURL = previewURL
+
+                    try db.execute(
+                        sql: """
+                            INSERT INTO assets(
+                                id, source_kind, source_identifier, file_path, thumbnail_path,
+                                sha256, filename, captured_at, width, height, metadata_json, imported_at, is_available
+                            ) VALUES (?, 'apple-photos-full', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                            """,
+                        arguments: [
+                            metadata.assetID,
+                            metadata.sourceIdentifier,
+                            previewURL.path,
+                            previewURL.path,
+                            inputSHA256,
+                            metadata.filename,
+                            metadata.capturedAt,
+                            metadata.width,
+                            metadata.height,
+                            metadataJSON,
+                            now
+                        ]
+                    )
+                }
+
+                try db.execute(
+                    sql: "UPDATE artifacts SET is_active = 0 WHERE asset_id = ? AND kind = 'annotation' AND producer = ?",
+                    arguments: [metadata.assetID, producer]
+                )
+                try db.execute(
+                    sql: """
+                        INSERT INTO artifacts(
+                            asset_id, kind, producer, model, prompt_version, schema_version,
+                            preprocess_version, input_sha256, data_json, raw_text, created_at, is_active
+                        ) VALUES (?, 'annotation', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                        ON CONFLICT(asset_id, kind, producer, model, prompt_version, schema_version, preprocess_version, input_sha256)
+                        DO UPDATE SET
+                            data_json = excluded.data_json,
+                            raw_text = excluded.raw_text,
+                            created_at = excluded.created_at,
+                            is_active = 1
+                        """,
+                    arguments: [
+                        metadata.assetID,
+                        producer,
+                        model,
+                        promptVersion,
+                        schemaVersion,
+                        preprocessVersion,
+                        inputSHA256,
+                        annotationJSON,
+                        vision.ocrText,
+                        now
+                    ]
+                )
+
+                try db.execute(
+                    sql: """
+                        INSERT INTO search_docs(asset_id, asset_type, short_caption, search_text, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                    arguments: [metadata.assetID, assetType, shortCaption, searchText, now]
+                )
+
+                try db.execute(sql: "DELETE FROM search_fts WHERE asset_id = ?", arguments: [metadata.assetID])
+                try db.execute(
+                    sql: "INSERT INTO search_fts(asset_id, search_text) VALUES (?, ?)",
+                    arguments: [metadata.assetID, searchText]
+                )
+                didInsert = true
             }
-
-            try db.execute(
-                sql: """
-                    INSERT INTO assets(
-                        id, source_kind, source_identifier, file_path, thumbnail_path,
-                        sha256, filename, captured_at, width, height, metadata_json, imported_at, is_available
-                    ) VALUES (?, 'apple-photos-full', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                    ON CONFLICT(id) DO UPDATE SET
-                        source_identifier = excluded.source_identifier,
-                        file_path = excluded.file_path,
-                        thumbnail_path = excluded.thumbnail_path,
-                        sha256 = excluded.sha256,
-                        filename = excluded.filename,
-                        captured_at = excluded.captured_at,
-                        width = excluded.width,
-                        height = excluded.height,
-                        metadata_json = excluded.metadata_json,
-                        is_available = 1
-                    """,
-                arguments: [
-                    metadata.assetID,
-                    metadata.sourceIdentifier,
-                    previewURL.path,
-                    previewURL.path,
-                    sha256,
-                    metadata.filename,
-                    metadata.capturedAt,
-                    metadata.width,
-                    metadata.height,
-                    metadataJSON,
-                    now
-                ]
-            )
-
-            try db.execute(
-                sql: """
-                    INSERT INTO artifacts(
-                        asset_id, kind, producer, model, prompt_version, schema_version,
-                        preprocess_version, input_sha256, data_json, raw_text, created_at, is_active
-                    ) VALUES (?, 'annotation', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                    ON CONFLICT(asset_id, kind, producer, model, prompt_version, schema_version, preprocess_version, input_sha256)
-                    DO UPDATE SET
-                        data_json = excluded.data_json,
-                        raw_text = excluded.raw_text,
-                        created_at = excluded.created_at,
-                        is_active = 1
-                    """,
-                arguments: [
-                    metadata.assetID,
-                    producer,
-                    model,
-                    promptVersion,
-                    schemaVersion,
-                    preprocessVersion,
-                    sha256,
-                    annotationJSON,
-                    vision.ocrText,
-                    now
-                ]
-            )
-
-            try db.execute(
-                sql: """
-                    INSERT INTO search_docs(asset_id, asset_type, short_caption, search_text, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                arguments: [metadata.assetID, assetType, shortCaption, searchText, now]
-            )
-
-            try db.execute(sql: "DELETE FROM search_fts WHERE asset_id = ?", arguments: [metadata.assetID])
-            try db.execute(
-                sql: "INSERT INTO search_fts(asset_id, search_text) VALUES (?, ?)",
-                arguments: [metadata.assetID, searchText]
-            )
+            return didInsert
+        } catch {
+            if let writtenPreviewURL {
+                try? FileManager.default.removeItem(at: writtenPreviewURL)
+            }
+            throw error
         }
-        return true
+    }
+
+    static func assetShouldSkip(_ db: Database, assetID: String) throws -> Bool {
+        if try Int.fetchOne(
+            db,
+            sql: "SELECT 1 FROM search_docs WHERE asset_id = ? LIMIT 1",
+            arguments: [assetID]
+        ) != nil {
+            return true
+        }
+        return try Int.fetchOne(
+            db,
+            sql: """
+                SELECT 1 FROM artifacts
+                WHERE asset_id = ? AND kind = 'annotation' AND is_active = 1
+                  AND producer != ?
+                LIMIT 1
+                """,
+            arguments: [assetID, producer]
+        ) != nil
     }
 
     static func openWritableQueue(at path: String) throws -> DatabaseQueue {
@@ -571,11 +688,13 @@ private final class NativeIndexingCancellation: @unchecked Sendable {
 @MainActor
 final class NativeIndexerStore {
     private(set) var authorizationStatus: PHAuthorizationStatus
+    private(set) var isAuthorizing = false
     private(set) var isIndexing = false
     private(set) var processedCount = 0
     private(set) var totalCount = 0
     private(set) var newlyIndexedCount = 0
     private(set) var skippedCount = 0
+    private(set) var failedCount = 0
     private(set) var statusMessage = ""
     private(set) var lastError: String?
 
@@ -587,6 +706,10 @@ final class NativeIndexerStore {
 
     init(authorizationStatus: PHAuthorizationStatus = .notDetermined) {
         self.authorizationStatus = authorizationStatus
+    }
+
+    var isBusy: Bool {
+        isIndexing || isAuthorizing
     }
 
     var isAuthorized: Bool {
@@ -627,14 +750,16 @@ final class NativeIndexerStore {
         databasePath: String = PhotoSearchDatabase.path,
         onProgressBatch: (@MainActor @Sendable () -> Void)? = nil
     ) {
-        guard !isIndexing else { return }
+        guard !isBusy else { return }
         lastError = nil
 
         let currentStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         authorizationStatus = currentStatus
         if currentStatus == .notDetermined {
+            isAuthorizing = true
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                defer { self.isAuthorizing = false }
                 let resolved = await self.requestAuthorization()
                 guard resolved == .authorized || resolved == .limited else {
                     self.lastError = "Allow Photos access to index your library locally."
@@ -665,31 +790,34 @@ final class NativeIndexerStore {
         totalCount = 0
         newlyIndexedCount = 0
         skippedCount = 0
+        failedCount = 0
         statusMessage = "Scanning Apple Photos…"
 
         let batchCallback = onProgressBatch
-        let publishProgress: @Sendable (Int, Int, Int, Int, String, Bool) -> Void = {
-            [weak self] processed, total, newlyIndexed, skipped, message, shouldRefreshGrid in
+        let publishProgress: @Sendable (Int, Int, Int, Int, Int, String, Bool) -> Void = {
+            [weak self] processed, total, newlyIndexed, skipped, failed, message, shouldRefreshGrid in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.processedCount = processed
                 self.totalCount = total
                 self.newlyIndexedCount = newlyIndexed
                 self.skippedCount = skipped
+                self.failedCount = failed
                 self.statusMessage = message
                 if shouldRefreshGrid {
                     batchCallback?()
                 }
             }
         }
-        let finishRun: @Sendable (Int, Int, Int, Int, String, String?) -> Void = {
-            [weak self] processed, total, newlyIndexed, skipped, message, errorMessage in
+        let finishRun: @Sendable (Int, Int, Int, Int, Int, String, String?) -> Void = {
+            [weak self] processed, total, newlyIndexed, skipped, failed, message, errorMessage in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.processedCount = processed
                 self.totalCount = total
                 self.newlyIndexedCount = newlyIndexed
                 self.skippedCount = skipped
+                self.failedCount = failed
                 self.statusMessage = message
                 self.lastError = errorMessage
                 self.isIndexing = false
@@ -716,11 +844,11 @@ final class NativeIndexerStore {
                 let targetCount = limit.map { min($0, fetched.count) } ?? fetched.count
 
                 if targetCount == 0 {
-                    finishRun(0, 0, 0, 0, "No photos or videos found in Photos.", nil)
+                    finishRun(0, 0, 0, 0, 0, "No photos or videos found in Photos.", nil)
                     return
                 }
 
-                publishProgress(0, targetCount, 0, 0, "Indexing on-device with Apple Vision…", false)
+                publishProgress(0, targetCount, 0, 0, 0, "Indexing on-device with Apple Vision…", false)
 
                 let manager = PHImageManager.default()
                 let isoFormatter = ISO8601DateFormatter()
@@ -729,6 +857,8 @@ final class NativeIndexerStore {
                 var processed = 0
                 var newlyIndexed = 0
                 var skipped = 0
+                var failed = 0
+                var lastNotifiedNewlyIndexed = 0
 
                 for index in 0..<targetCount {
                     if cancellation.isCancelled { break }
@@ -753,11 +883,7 @@ final class NativeIndexerStore {
 
                         do {
                             let alreadyPresent = try queue.read { db in
-                                try Int.fetchOne(
-                                    db,
-                                    sql: "SELECT 1 FROM search_docs WHERE asset_id = ? LIMIT 1",
-                                    arguments: [assetID]
-                                ) != nil
+                                try NativeLibraryIndexer.assetShouldSkip(db, assetID: assetID)
                             }
                             if alreadyPresent {
                                 skipped += 1
@@ -775,33 +901,39 @@ final class NativeIndexerStore {
                                     skipped += 1
                                 }
                             } else {
-                                skipped += 1
+                                failed += 1
                             }
                         } catch {
-                            skipped += 1
+                            failed += 1
                         }
                     }
 
                     processed += 1
-                    let notifyGrid = newlyIndexed > 0 && newlyIndexed.isMultiple(of: 10)
+                    var notifyGrid = false
+                    if newlyIndexed - lastNotifiedNewlyIndexed >= 10 {
+                        lastNotifiedNewlyIndexed = newlyIndexed
+                        notifyGrid = true
+                    }
                     if processed == 1 || processed.isMultiple(of: 5) || processed == targetCount {
                         publishProgress(
                             processed,
                             targetCount,
                             newlyIndexed,
                             skipped,
+                            failed,
                             "Indexed \(newlyIndexed.formatted()) new (\(processed.formatted())/\(targetCount.formatted()))",
                             notifyGrid
                         )
                     }
                 }
 
+                let failedSuffix = failed > 0 ? ", \(failed.formatted()) failed" : ""
                 let summary = cancellation.isCancelled
-                    ? "Stopped — \(newlyIndexed.formatted()) indexed, \(skipped.formatted()) skipped."
-                    : "Done — \(newlyIndexed.formatted()) indexed, \(skipped.formatted()) already in index."
-                finishRun(processed, targetCount, newlyIndexed, skipped, summary, nil)
+                    ? "Stopped — \(newlyIndexed.formatted()) indexed, \(skipped.formatted()) skipped\(failedSuffix)."
+                    : "Done — \(newlyIndexed.formatted()) indexed, \(skipped.formatted()) already in index\(failedSuffix)."
+                finishRun(processed, targetCount, newlyIndexed, skipped, failed, summary, nil)
             } catch {
-                finishRun(0, 0, 0, 0, "Indexing failed.", error.localizedDescription)
+                finishRun(0, 0, 0, 0, 0, "Indexing failed.", error.localizedDescription)
             }
         }
     }
