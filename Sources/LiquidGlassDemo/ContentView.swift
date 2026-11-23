@@ -30,6 +30,7 @@ struct ContentView: View {
     @State private var connection = PhotoConnectionStore()
     @State private var indexActivity = PhotoIndexActivityStore()
     @State private var encoder: PhotoEncoderStore
+    @State private var nativeIndexer = NativeIndexerStore()
     @State private var landingQuery = ""
     @State private var hasEnteredSearch = false
     @State private var thumbnailContentMode: ContentMode = .fill
@@ -71,7 +72,7 @@ struct ContentView: View {
 
     var body: some View {
         appContent
-            .disabled(ui.showSettings)
+            .disabled(ui.showSettings || ui.showOnboarding)
             .toolbar { libraryToolbar }
             .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: hasEnteredSearch)
             .overlay {
@@ -82,16 +83,30 @@ struct ContentView: View {
                         beginSearch(entry.query, section: entry.section)
                     }
                         .transition(.opacity)
+                } else if ui.showOnboarding {
+                    OnboardingView(
+                        ui: ui,
+                        indexer: nativeIndexer,
+                        onProgress: {
+                            store.reload(showLoading: false, encoder: encoder)
+                        },
+                        onFinished: {
+                            store.reload(encoder: encoder)
+                            Task { await connection.refresh() }
+                        }
+                    )
+                        .transition(.opacity)
                 }
             }
             .animation(.easeInOut(duration: 0.18), value: ui.showSettings)
+            .animation(.easeInOut(duration: 0.18), value: ui.showOnboarding)
             // The encoder host also exits when its stdin closes, so a crash still
             // releases the model; this just makes the normal quit explicit.
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                 encoder.shutdown()
             }
             .overlay(alignment: .bottom) {
-                if let issue = connection.issue {
+                if !ui.showOnboarding, let issue = connection.issue {
                     PhotoConnectionNotice(issue: issue, isChecking: connection.isChecking) {
                         ModelProviderSettings.resumeWorker()
                         Task { await connection.refresh() }
@@ -132,6 +147,11 @@ struct ContentView: View {
                 store.reload(onlyIfChanged: true, encoder: encoder)
             }
             .task {
+                if showsPointerEffects,
+                   !ui.hasCompletedOnboarding,
+                   !FileManager.default.fileExists(atPath: PhotoSearchDatabase.path) {
+                    ui.showOnboarding = true
+                }
                 while !Task.isCancelled {
                     await connection.refresh()
                     try? await Task.sleep(for: .seconds(30))
@@ -320,7 +340,8 @@ struct ContentView: View {
                 onSubmit: { beginSearch(landingQuery) },
                 onBrowse: { enterLibrary() },
                 onRandomBrowse: { randomBrowsePresented = true },
-                onSettings: { ui.showSettings = true }
+                onSettings: { ui.showSettings = true },
+                onSetup: { ui.showOnboarding = true }
             )
             .padding(.horizontal, 48)
         }

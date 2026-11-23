@@ -379,6 +379,7 @@ struct PhotoLandingSearchView: View {
     let onBrowse: () -> Void
     let onRandomBrowse: () -> Void
     let onSettings: () -> Void
+    var onSetup: (() -> Void)? = nil
 
     @FocusState private var focused: Bool
     @State private var hovering = false
@@ -429,6 +430,13 @@ struct PhotoLandingSearchView: View {
                     systemImage: "slider.horizontal.3",
                     action: onSettings
                 )
+                if indexedCount == 0, let onSetup {
+                    LandingEntryButton(
+                        title: "Quick Index",
+                        systemImage: "sparkles",
+                        action: onSetup
+                    )
+                }
             }
 
             // Appears once the index count lands; kept out of the button label so

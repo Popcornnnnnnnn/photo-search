@@ -55,6 +55,12 @@ final class PhotoConnectionStore {
 enum PhotoConnectionService {
     @MainActor
     static func check() async throws -> PhotoConnectionIssue? {
+        let hasCustomProviderConfig = FileManager.default.fileExists(
+            atPath: ModelProviderSettings.configurationURL.path
+        )
+        if !hasCustomProviderConfig, PhotoWorkerStatus.snapshot() == nil {
+            return await PhotoSearchDatabase.isAvailable() ? nil : .index
+        }
         let configuration = ModelProviderSettings.loadConfiguration()
         let provider = configuration.effectiveProvider(worker: PhotoWorkerStatus.snapshot()) ?? .qwen4090
         return try await check(index: { await PhotoSearchDatabase.isAvailable() }, provider: provider,

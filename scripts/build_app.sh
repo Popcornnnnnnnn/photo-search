@@ -140,7 +140,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
     <key>LSMinimumSystemVersion</key><string>$MIN_OS</string>
     <key>LSApplicationCategoryType</key><string>$CATEGORY</string>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSPhotoLibraryUsageDescription</key><string>Photo Search reads your library to play videos from Photos.</string>
+    <key>NSPhotoLibraryUsageDescription</key><string>Photo Search reads your Photos library locally on your Mac to index photos and videos for search and playback.</string>
     <key>NSAppleEventsUsageDescription</key><string>Photo Search opens the selected item in Photos so you can manage it there.</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
 $URL_KEYS
