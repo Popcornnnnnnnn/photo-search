@@ -36,3 +36,6 @@ Icon?
 # Generated verification output from scripts/verify.sh (snapshots, logs). The
 # curated README assets live in images/ instead, so none of this is committed.
 verify-artifacts/
+
+# Machine-local fast-anything Rust ports and recorded call fixtures (may contain local photo text)
+.fast/
