@@ -1,6 +1,7 @@
 import json
 import math
 import random
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,7 +14,7 @@ from photo_search.embeddings import (
     VIDEO_EMBEDDING_NAMESPACE, VIDEO_EMBEDDING_PROMPT,
     normalized,
 )
-from photo_search.search import search, text_coverage
+from photo_search.search import fts_candidate_query, score_lexical_docs, search, text_coverage
 from photo_search.worker import sync_due
 
 
@@ -270,3 +271,141 @@ class SearchTests(unittest.TestCase):
         self.assertFalse(sync_due({"last_sync_at": now.isoformat()}))
         self.assertTrue(sync_due({"last_sync_at": (now - timedelta(minutes=6)).isoformat()}))
         self.assertTrue(sync_due({}))
+
+    def test_fts_candidate_query_rules(self):
+        self.assertEqual(
+            fts_candidate_query("opencode econnrefused", ["opencode econnrefused", "opencode", "econnrefused"], [], set()),
+            '"opencode econnrefused" OR "opencode" OR "econnrefused"',
+        )
+        self.assertEqual(
+            fts_candidate_query("foo_bar 密码", ["foo_bar 密码", "foo_bar", "密码"], ["foo_bar"], set()),
+            '"foo_bar"',
+        )
+        self.assertIsNone(fts_candidate_query("密码", ["密码"], [], set()))
+        self.assertIsNone(fts_candidate_query("opencode", ["opencode"], [], {"chat_screenshot"}))
+        self.assertEqual(
+            fts_candidate_query('a"b', ['a"b'], [], set()),
+            '"a""b"',
+        )
+
+    def test_fts_matches_full_scan_for_lexical_and_hybrid(self):
+        self.add_photo("alpha", "OpenCode ECONNREFUSED error in terminal", "chat_screenshot", axis=1)
+        self.add_photo("beta", "ZXQ_9942_ERR port-tools status", "photo", axis=0)
+        self.add_photo("gamma", "高架水泥柱骑行照片", "photo", axis=0)
+        # Unannotated asset with embedding only (present in assets/embeddings, absent from search_docs/search_fts)
+        self.db.upsert_asset({
+            "id": "unannotated-visual", "source_kind": "file", "source_identifier": "unannotated-visual",
+            "file_path": "/unused.jpg", "thumbnail_path": "/unused.jpg",
+            "sha256": "uv1", "filename": "uv1.jpg", "metadata": {},
+        })
+        self.db.upsert_embedding(
+            asset_id="unannotated-visual", namespace=EMBEDDING_NAMESPACE, model=EMBEDDING_MODEL,
+            model_revision=EMBEDDING_REVISION, prompt_version=EMBEDDING_PROMPT,
+            vector=[1.0] + [0.0] * (DIMENSIONS - 1),
+        )
+
+        queries = [
+            ("OpenCode ECONNREFUSED", None),
+            ("port-tools", "photo"),
+            ("ZXQ_9942_ERR", None),
+            ("高架水泥柱", None),
+        ]
+        for query, section in queries:
+            for hybrid in (False, True):
+                with self.subTest(query=query, section=section, hybrid=hybrid):
+                    with patch("photo_search.search.embed_query", return_value=[1.0] + [0.0] * (DIMENSIONS - 1)):
+                        fts_res = search(self.db, query, limit=50, expand=False, hybrid=hybrid, asset_type=section)
+                    with patch("photo_search.search.fts_candidate_query", return_value=None), \
+                         patch("photo_search.search.embed_query", return_value=[1.0] + [0.0] * (DIMENSIONS - 1)):
+                        scan_res = search(self.db, query, limit=50, expand=False, hybrid=hybrid, asset_type=section)
+                    self.assertEqual(fts_res["plan"]["searchable_count"], scan_res["plan"]["searchable_count"])
+                    self.assertEqual(fts_res["plan"]["embedding_count"], scan_res["plan"]["embedding_count"])
+                    self.assertEqual(
+                        [(r["asset_id"], r["score"], r.get("matched_terms"), r.get("text_coverage"), r.get("visual_similarity")) for r in fts_res["results"]],
+                        [(r["asset_id"], r["score"], r.get("matched_terms"), r.get("text_coverage"), r.get("visual_similarity")) for r in scan_res["results"]],
+                    )
+
+    def test_score_lexical_docs_edge_cases(self):
+        docs = [
+            ("d1", "HIGHWAY 水泥柱旁 OpenCode err404_test", "photo"),
+            ("d2", "高架水泥柱旁边的骑行者", "photo"),
+            ("d3", "unrelated document", "chat_screenshot"),
+        ]
+        # Overlapping CJK n-grams + uppercase search_text + requested_types boost
+        scored = score_lexical_docs(
+            "高架水泥",
+            ["高架水泥", "高架水", "架水泥", "高架", "水泥", "高架"],
+            ["chat_screenshot"],
+            docs,
+        )
+        by_id = {row[0]: row for row in scored}
+        self.assertEqual(set(by_id.keys()), {"d1", "d2", "d3"})
+        self.assertEqual(by_id["d1"][1], 4.4)
+        self.assertEqual(by_id["d1"][2], ["水泥"])
+        self.assertAlmostEqual(by_id["d1"][3], 0.5, places=9)
+        self.assertEqual(by_id["d2"][1], 39.75)
+        self.assertEqual(by_id["d2"][2], ["高架水泥", "高架水", "架水泥", "高架", "水泥"])
+        self.assertEqual(by_id["d2"][3], 1.0)
+        self.assertEqual(by_id["d3"][1], 2.0)
+        self.assertEqual(by_id["d3"][2], [])
+        self.assertEqual(by_id["d3"][3], 0.0)
+
+        # Mandatory identifier filter
+        ident_scored = score_lexical_docs("err404_test opencode", ["err404_test", "opencode"], [], docs)
+        self.assertEqual([r[0] for r in ident_scored], ["d1"])
+
+    def test_database_migrates_v1_to_v2_and_backfills_search_fts(self):
+        legacy_path = Path(self.temporary.name) / "legacy-v1.sqlite3"
+        conn = sqlite3.connect(legacy_path)
+        conn.executescript(
+            """
+            CREATE TABLE assets (
+                id TEXT PRIMARY KEY,
+                source_kind TEXT NOT NULL,
+                source_identifier TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                thumbnail_path TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                captured_at TEXT,
+                width INTEGER,
+                height INTEGER,
+                metadata_json TEXT NOT NULL,
+                imported_at TEXT NOT NULL,
+                is_available INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE artifacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                asset_id TEXT NOT NULL, kind TEXT NOT NULL, producer TEXT NOT NULL,
+                model TEXT NOT NULL DEFAULT '', prompt_version TEXT NOT NULL DEFAULT '',
+                schema_version TEXT NOT NULL DEFAULT '', preprocess_version TEXT NOT NULL DEFAULT '',
+                input_sha256 TEXT NOT NULL, data_json TEXT NOT NULL, raw_text TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE embeddings (
+                asset_id TEXT NOT NULL, namespace TEXT NOT NULL, model TEXT NOT NULL,
+                model_revision TEXT NOT NULL DEFAULT '', prompt_version TEXT NOT NULL DEFAULT '',
+                input_sha256 TEXT NOT NULL, dimensions INTEGER NOT NULL, vector BLOB NOT NULL,
+                created_at TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE search_docs (
+                asset_id TEXT PRIMARY KEY, asset_type TEXT NOT NULL DEFAULT 'other',
+                short_caption TEXT NOT NULL DEFAULT '', search_text TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            INSERT INTO assets VALUES (
+                'legacy-1', 'file', 'legacy-1', '/tmp/a.jpg', '/tmp/a.jpg', 'sha',
+                'a.jpg', NULL, 100, 100, '{}', '2026-01-01T00:00:00Z', 1
+            );
+            INSERT INTO search_docs VALUES (
+                'legacy-1', 'photo', 'Vintage espresso machine', 'vintage espresso machine counter', '2026-01-01T00:00:00Z'
+            );
+            PRAGMA user_version=1;
+            """
+        )
+        conn.close()
+
+        with Database(legacy_path) as migrated:
+            version = migrated.conn.execute("PRAGMA user_version").fetchone()[0]
+            self.assertEqual(version, 2)
+            hits = migrated.search_docs_fts('"espresso"')
+            self.assertEqual([row["asset_id"] for row in hits], ["legacy-1"])

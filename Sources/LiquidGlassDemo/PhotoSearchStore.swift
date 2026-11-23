@@ -153,6 +153,55 @@ final class PhotoSearchStore {
         isViewerPresented = true
     }
 
+    func openAsset(id: String) {
+        if let existing = photos.first(where: { $0.id == id }) {
+            openViewer(for: existing)
+            return
+        }
+        lastRequestedQuery = submittedQuery
+        lastRequestedSection = section
+        lastRequestedTimeFilter = timeFilter
+        isLoadingMore = false
+        loadTask?.cancel()
+        isReloading = true
+        loadGeneration += 1
+        let generation = loadGeneration
+        let path = databasePath
+        isLoading = true
+        searchNotice = nil
+        searchNoticeTitle = nil
+
+        loadTask = Task {
+            do {
+                try Task.checkCancellation()
+                let photo = try await photoSearchBackground {
+                    try PhotoSearchDatabase.fetchAsset(id: id, databasePath: path)
+                }
+                try Task.checkCancellation()
+                guard generation == loadGeneration else { return }
+                isReloading = false
+                isLoading = false
+                if let photo {
+                    photos = [photo]
+                    resultCount = 1
+                    selectedID = photo.id
+                    viewerInfoVisible = false
+                    isViewerPresented = true
+                    errorMessage = nil
+                } else {
+                    errorMessage = "The selected item is no longer available in the index."
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard generation == loadGeneration else { return }
+                isReloading = false
+                isLoading = false
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
     func closeViewer() {
         isViewerPresented = false
         viewerInfoVisible = false
@@ -270,6 +319,7 @@ enum PhotoSearchDatabase {
         let photos: [IndexedPhoto]
         let matchedCount: Int
         let stats: PhotoLibraryStats
+        var visualSearchRan: Bool = false
         var notice: String? = nil
         var noticeTitle: String? = nil
         var indexRevision: String? = nil
@@ -335,16 +385,7 @@ enum PhotoSearchDatabase {
                 """
             let rows = try Row.fetchAll(db, sql: sql,
                                        arguments: StatementArguments(arguments + [max(1, limit), max(0, offset)]))
-            let photos = rows.map { row in
-                let annotationJSON: String? = row["data_json"]
-                return IndexedPhoto(
-                    id: row["id"], thumbnailPath: row["thumbnail_path"], filePath: row["file_path"],
-                    filename: row["filename"], capturedAt: row["captured_at"], width: row["width"],
-                    height: row["height"], assetType: row["asset_type"], shortCaption: row["short_caption"],
-                    model: row["model"], annotation: PhotoAnnotation.decode(annotationJSON),
-                    durationSeconds: IndexedPhoto.videoDuration(from: row["metadata_json"])
-                )
-            }
+            let photos = rows.map(indexedPhoto(from:))
             let count = try Int.fetchOne(db, sql: """
                 SELECT COUNT(*) FROM assets a JOIN search_docs d ON d.asset_id = a.id
                 WHERE \(conditions.joined(separator: " AND "))
@@ -352,6 +393,38 @@ enum PhotoSearchDatabase {
             return Output(photos: photos, matchedCount: count, stats: try PhotoSearchEngine.loadStats(db),
                           indexRevision: revision)
         }
+    }
+
+    static func fetchAsset(id: String, databasePath: String = PhotoSearchDatabase.path) throws -> IndexedPhoto? {
+        guard !id.isEmpty, FileManager.default.fileExists(atPath: databasePath) else { return nil }
+        return try read(at: databasePath) { db in
+            let sql = """
+                SELECT a.id, a.thumbnail_path, a.file_path, a.filename, a.captured_at,
+                       a.width, a.height, a.metadata_json,
+                       COALESCE(d.asset_type, CASE WHEN json_extract(a.metadata_json, '$.media_type')='video' THEN 'video' ELSE 'other' END) AS asset_type,
+                       COALESCE(d.short_caption, '') AS short_caption,
+                       j.model, j.data_json
+                FROM assets AS a
+                LEFT JOIN search_docs AS d ON d.asset_id = a.id
+                LEFT JOIN artifacts AS j ON j.asset_id = a.id AND j.kind = 'annotation'
+                    AND j.is_active = 1 AND j.input_sha256 = a.sha256
+                WHERE a.id = ? AND a.is_available = 1
+                LIMIT 1
+                """
+            guard let row = try Row.fetchOne(db, sql: sql, arguments: [id]) else { return nil }
+            return indexedPhoto(from: row)
+        }
+    }
+
+    private static func indexedPhoto(from row: Row) -> IndexedPhoto {
+        let annotationJSON: String? = row["data_json"]
+        return IndexedPhoto(
+            id: row["id"], thumbnailPath: row["thumbnail_path"], filePath: row["file_path"],
+            filename: row["filename"], capturedAt: row["captured_at"], width: row["width"],
+            height: row["height"], assetType: row["asset_type"], shortCaption: row["short_caption"],
+            model: row["model"], annotation: PhotoAnnotation.decode(annotationJSON),
+            durationSeconds: IndexedPhoto.videoDuration(from: row["metadata_json"])
+        )
     }
 
     /// Cheap probe for the connection check: is there an index we can actually read?

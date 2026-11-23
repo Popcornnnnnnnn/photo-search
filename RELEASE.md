@@ -1,9 +1,9 @@
-# Releasing LiquidGlassDemo
+# Releasing Photo Search
 
-LiquidGlassDemo ships as a **direct download** — a signed, notarized DMG hosted on
+Photo Search ships as a **direct download** — a signed, notarized DMG hosted on
 GitHub Releases, with in-app auto-updates via [Sparkle](https://sparkle-project.org).
-This is *not* the Mac App Store (Sparkle isn't allowed there); it's the same model
-the reference project uses.
+This is *not* the Mac App Store (Sparkle isn't allowed there); it's a standard
+Developer ID direct-download workflow.
 
 The pipeline: **build + sign `.app` → DMG → notarize + staple → update the Sparkle
 appcast → publish a GitHub release**. `scripts/release.sh` runs all of it once the
@@ -26,10 +26,11 @@ committed — they live in your keychain and in `app.yml` (public values only).
 2. **Notarization credentials.** Create an app-specific password (or App Store
    Connect API key) and store it as a notarytool profile:
    ```bash
-   xcrun notarytool store-credentials "LiquidGlassDemo Notary" \
+   xcrun notarytool store-credentials "photo-search-notary" \
        --apple-id "you@example.com" --team-id "TEAMID" --password "app-specific-pw"
    ```
-   Put the profile name in `app.yml` → `notarytool_keychain_profile`.
+   Put the profile name in `app.yml` → `notarytool_keychain_profile`, or pass
+   `PHOTO_SEARCH_NOTARY_PROFILE=<existing-profile>` when running `scripts/release.sh`.
 
 3. **Sparkle signing key.** Generate an Ed25519 key pair once. The **private key
    stays in your keychain**; the tool prints the **public** key:
@@ -64,16 +65,16 @@ git add appcast.xml && git commit -m "Release 1.2.0" && git push
 ```
 
 Existing users get the update automatically (Sparkle checks the feed on launch and
-periodically), or via **LiquidGlassDemo ▸ Check for Updates…**.
+periodically), or via **Photo Search ▸ Check for Updates…**.
 
 ## Local testing (no signing)
 
-`scripts/build_app.sh` assembles `dist/LiquidGlassDemo.app` without signing when no
+`scripts/build_app.sh` assembles `dist/Photo Search.app` without signing when no
 Developer ID is set — good for checking the bundle, icon, and layout:
 
 ```bash
-scripts/build_app.sh --version 0.0.0 --build 1
-open dist/LiquidGlassDemo.app
+scripts/build_app.sh --version 0.0.0 --build 1 --scratch
+open "dist/Photo Search.app"
 ```
 
 Unsigned builds omit the Sparkle keys, so auto-update stays off (no updater errors).

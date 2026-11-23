@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Sparkle appcast (update feed) for LiquidGlassDemo.
+  Sparkle appcast (update feed) for Photo Search.
 
   This file starts empty. `scripts/release.sh` prepends a new <item> for each
   release: version, notes, minimum OS, and an <enclosure> pointing at the signed
@@ -9,8 +9,8 @@
 -->
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
   <channel>
-    <title>LiquidGlassDemo Changelog</title>
-    <description>Most recent updates to LiquidGlassDemo.</description>
+    <title>Photo Search Changelog</title>
+    <description>Most recent updates to Photo Search.</description>
     <language>en</language>
   </channel>
 </rss>

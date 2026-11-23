@@ -1,0 +1,133 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "photo-search",
+  "title": "Photo Search",
+  "description": "Search Apple Photos and videos with natural language, OCR, and local visual embeddings via Photo Search.",
+  "icon": "command-icon.png",
+  "author": "popcornnnnnnnn",
+  "categories": [
+    "Media",
+    "Productivity"
+  ],
+  "license": "MIT",
+  "platforms": [
+    "macOS"
+  ],
+  "commands": [
+    {
+      "name": "search-photos",
+      "title": "Search Photos",
+      "subtitle": "Photo Search",
+      "description": "Search indexed photos, screenshots, chats, documents, and memes with natural language and visual AI",
+      "keywords": [
+        "sp",
+        "photos",
+        "images",
+        "screenshots"
+      ],
+      "mode": "view"
+    },
+    {
+      "name": "search-videos",
+      "title": "Search Videos",
+      "subtitle": "Photo Search",
+      "description": "Search indexed videos by natural language description, scene, and visible text",
+      "keywords": [
+        "sv",
+        "videos",
+        "clips"
+      ],
+      "mode": "view"
+    },
+    {
+      "name": "visual-search-status",
+      "title": "Visual Search Status",
+      "subtitle": "Photo Search",
+      "description": "Check index coverage and manage the local visual search model in RAM",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "searchMode",
+      "title": "Search Mode",
+      "description": "Hybrid shows instant text/OCR hits first and reranks with local visual AI via the running Photo Search app.",
+      "type": "dropdown",
+      "required": true,
+      "default": "hybrid",
+      "data": [
+        {
+          "title": "Hybrid (Text + Visual)",
+          "value": "hybrid"
+        },
+        {
+          "title": "Fast Text Only (Captions & OCR)",
+          "value": "lexical"
+        }
+      ]
+    },
+    {
+      "name": "autoStartCompanion",
+      "title": "Auto-Start Photo Search in Background",
+      "description": "Launch Photo Search silently in the background when hybrid visual search is needed.",
+      "type": "checkbox",
+      "label": "Start Photo Search silently for hybrid visual search",
+      "required": false,
+      "default": true
+    },
+    {
+      "name": "appPath",
+      "title": "Photo Search App Path",
+      "description": "Path to the installed Photo Search companion app bundle.",
+      "type": "textfield",
+      "required": false,
+      "default": "/Applications/Photo Search.app",
+      "placeholder": "/Applications/Photo Search.app"
+    },
+    {
+      "name": "resultLimit",
+      "title": "Results Limit",
+      "description": "Maximum number of results to display per query.",
+      "type": "dropdown",
+      "required": true,
+      "default": "40",
+      "data": [
+        {
+          "title": "20 results",
+          "value": "20"
+        },
+        {
+          "title": "40 results",
+          "value": "40"
+        },
+        {
+          "title": "60 results",
+          "value": "60"
+        },
+        {
+          "title": "100 results",
+          "value": "100"
+        }
+      ]
+    }
+  ],
+  "scripts": {
+    "build": "ray build -e dist",
+    "dev": "ray develop",
+    "fix-lint": "ray lint --fix",
+    "lint": "ray lint",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@raycast/api": "^2.13.1",
+    "@raycast/utils": "^2.3.3"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^2.2.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "eslint": "^9.20.0",
+    "prettier": "^3.5.0",
+    "typescript": "^5.8.0"
+  }
+}

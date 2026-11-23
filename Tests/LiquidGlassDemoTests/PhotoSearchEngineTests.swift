@@ -539,4 +539,183 @@ import Testing
         Issue.record("Search did not finish")
     }
 
+    @Test func ftsCandidateQueryRules() {
+        #expect(
+            PhotoSearchEngine.ftsCandidateQuery(
+                queryLower: "opencode econnrefused",
+                terms: ["opencode econnrefused", "opencode", "econnrefused"],
+                identifiers: []
+            ) == "\"opencode econnrefused\" OR \"opencode\" OR \"econnrefused\""
+        )
+        #expect(
+            PhotoSearchEngine.ftsCandidateQuery(
+                queryLower: "foo_bar 密码",
+                terms: ["foo_bar 密码", "foo_bar", "密码"],
+                identifiers: ["foo_bar"]
+            ) == "\"foo_bar\""
+        )
+        #expect(
+            PhotoSearchEngine.ftsCandidateQuery(
+                queryLower: "密码",
+                terms: ["密码"],
+                identifiers: []
+            ) == nil
+        )
+        #expect(
+            PhotoSearchEngine.ftsCandidateQuery(
+                queryLower: "a\"b",
+                terms: ["a\"b"],
+                identifiers: []
+            ) == "\"a\"\"b\""
+        )
+    }
+
+    @Test func ftsMatchesFullScanForLexicalAndHybrid() throws {
+        let fixture = try makeFixture()
+        defer { cleanUp(fixture) }
+
+        let queue = try DatabaseQueue(path: fixture.path)
+        try queue.write { db in
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE search_fts USING fts5(
+                    asset_id UNINDEXED,
+                    search_text,
+                    tokenize='trigram'
+                );
+                """)
+        }
+        try queue.close()
+
+        func addWithFTS(id: String, caption: String, assetType: String = "photo", capturedAt: String? = nil) throws {
+            try addPhoto(fixture.path, id: id, caption: caption, assetType: assetType, capturedAt: capturedAt)
+            let q = try DatabaseQueue(path: fixture.path)
+            try q.write { db in
+                try db.execute(
+                    sql: "INSERT INTO search_fts(asset_id, search_text) VALUES (?, ?)",
+                    arguments: [id, caption.lowercased()]
+                )
+            }
+            try q.close()
+        }
+
+        try addWithFTS(id: "alpha", caption: "OpenCode ECONNREFUSED terminal error", assetType: "chat_screenshot", capturedAt: "2026-01-02T00:00:00Z")
+        try addEmbedding(fixture.path, id: "alpha", vector: axisVector(1))
+        try addWithFTS(id: "beta", caption: "ZXQ_9942_ERR port-tools panel", assetType: "photo", capturedAt: "2026-01-03T00:00:00Z")
+        try addEmbedding(fixture.path, id: "beta", vector: axisVector(0))
+        try addWithFTS(id: "gamma", caption: "高架水泥柱旁边的骑行照片", assetType: "photo", capturedAt: "2026-01-04T00:00:00Z")
+        try addEmbedding(fixture.path, id: "gamma", vector: axisVector(0))
+
+        // Unannotated visual-only asset (present in assets + embeddings, absent from search_docs & search_fts)
+        let qUnann = try DatabaseQueue(path: fixture.path)
+        try qUnann.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO assets(
+                        id, source_kind, source_identifier, file_path, thumbnail_path, sha256,
+                        filename, captured_at, width, height, metadata_json, imported_at, is_available
+                    ) VALUES ('unannotated-visual', 'file', 'unannotated-visual', '/unused-uv.jpg', '/unused-uv.jpg', 'uv',
+                                'uv.jpg', '2026-01-05T00:00:00Z', 100, 100, '{}', '2026-01-05T00:00:00Z', 1)
+                    """
+            )
+        }
+        try qUnann.close()
+        try addEmbedding(fixture.path, id: "unannotated-visual", vector: axisVector(0))
+
+        // Create a twin database WITHOUT search_fts to force full scan as ground truth.
+        let noFTSFixture = try makeFixture()
+        defer { cleanUp(noFTSFixture) }
+        try addPhoto(noFTSFixture.path, id: "alpha", caption: "OpenCode ECONNREFUSED terminal error", assetType: "chat_screenshot", capturedAt: "2026-01-02T00:00:00Z")
+        try addEmbedding(noFTSFixture.path, id: "alpha", vector: axisVector(1))
+        try addPhoto(noFTSFixture.path, id: "beta", caption: "ZXQ_9942_ERR port-tools panel", assetType: "photo", capturedAt: "2026-01-03T00:00:00Z")
+        try addEmbedding(noFTSFixture.path, id: "beta", vector: axisVector(0))
+        try addPhoto(noFTSFixture.path, id: "gamma", caption: "高架水泥柱旁边的骑行照片", assetType: "photo", capturedAt: "2026-01-04T00:00:00Z")
+        try addEmbedding(noFTSFixture.path, id: "gamma", vector: axisVector(0))
+        let qUnann2 = try DatabaseQueue(path: noFTSFixture.path)
+        try qUnann2.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO assets(
+                        id, source_kind, source_identifier, file_path, thumbnail_path, sha256,
+                        filename, captured_at, width, height, metadata_json, imported_at, is_available
+                    ) VALUES ('unannotated-visual', 'file', 'unannotated-visual', '/unused-uv.jpg', '/unused-uv.jpg', 'uv',
+                                'uv.jpg', '2026-01-05T00:00:00Z', 100, 100, '{}', '2026-01-05T00:00:00Z', 1)
+                    """
+            )
+        }
+        try qUnann2.close()
+        try addEmbedding(noFTSFixture.path, id: "unannotated-visual", vector: axisVector(0))
+
+        let cases: [(String, PhotoSection)] = [
+            ("OpenCode ECONNREFUSED", .all),
+            ("port-tools", .photo),
+            ("ZXQ_9942_ERR", .all),
+            ("高架水泥柱", .all),
+        ]
+        for (query, section) in cases {
+            for vector in [nil, axisVector(0)] as [[Float]?] {
+                PhotoSearchEngine.clearCache()
+                let coldFTS = try PhotoSearchEngine.search(
+                    query: query, section: section, databasePath: fixture.path, queryVector: vector
+                )
+                let warmFTS = try PhotoSearchEngine.search(
+                    query: query, section: section, databasePath: fixture.path, queryVector: vector
+                )
+                PhotoSearchEngine.clearCache()
+                let groundTruth = try PhotoSearchEngine.search(
+                    query: query, section: section, databasePath: noFTSFixture.path, queryVector: vector
+                )
+                for result in [coldFTS, warmFTS] {
+                    #expect(result.photos.map(\.id) == groundTruth.photos.map(\.id))
+                    #expect(result.matchedCount == groundTruth.matchedCount)
+                    #expect(result.stats.total == groundTruth.stats.total)
+                    #expect(result.stats.indexed == groundTruth.stats.indexed)
+                    #expect(result.stats.failed == groundTruth.stats.failed)
+                    #expect(result.photos.map(\.matchEvidence) == groundTruth.photos.map(\.matchEvidence))
+                }
+            }
+        }
+    }
+
+    @Test func ahoCorasickMatchesOverlappingChineseNgramsAndIdentifiers() throws {
+        let fixture = try makeFixture()
+        defer { cleanUp(fixture) }
+        for index in 0..<24 {
+            try addPhoto(fixture.path, id: "filler-\(index)", caption: "Unrelated Studio Note \(index)",
+                         capturedAt: "2026-01-01T00:00:00Z")
+        }
+        try addPhoto(fixture.path, id: "partial", caption: "MIXED CASE 水泥柱旁 OpenCode err404_test",
+                     capturedAt: "2026-01-02T00:00:00Z")
+        try addPhoto(fixture.path, id: "exact", caption: "高架水泥柱旁边的骑行者",
+                     capturedAt: "2026-01-03T00:00:00Z")
+
+        PhotoSearchEngine.clearCache()
+        let chineseOut = try PhotoSearchEngine.search(
+            query: "高架水泥", section: .all, databasePath: fixture.path
+        )
+        #expect(chineseOut.photos.map(\.id) == ["exact", "partial"])
+
+        let identOut = try PhotoSearchEngine.search(
+            query: "err404_test opencode", section: .all, databasePath: fixture.path
+        )
+        #expect(identOut.photos.map(\.id) == ["partial"])
+    }
+
+    @Test func unpopulatedFTSTableFallsBackToFullScan() throws {
+        let fixture = try makeFixture()
+        defer { cleanUp(fixture) }
+        try addPhoto(fixture.path, id: "legacy-1", caption: "Espresso machine on wooden counter",
+                     capturedAt: "2026-01-02T00:00:00Z")
+        // Simulate an unmigrated DB where search_fts exists but was not backfilled yet.
+        let queue = try DatabaseQueue(path: fixture.path)
+        try queue.write { db in
+            try db.execute(sql: "CREATE VIRTUAL TABLE search_fts USING fts5(asset_id UNINDEXED, search_text, tokenize='trigram')")
+        }
+        try queue.close()
+
+        PhotoSearchEngine.clearCache()
+        let out = try PhotoSearchEngine.search(
+            query: "espresso", section: .all, databasePath: fixture.path
+        )
+        #expect(out.photos.map(\.id) == ["legacy-1"])
+    }
 }

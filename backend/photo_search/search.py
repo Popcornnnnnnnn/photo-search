@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from typing import Any
 
 from .db import Database
@@ -20,12 +21,18 @@ MIN_VISUAL_TEXT_COVERAGE = 0.25
 MIN_VIDEO_SIMILARITY = 0.55
 MIN_TEXT_COVERAGE = 0.50
 
+_STOPWORDS_RE = re.compile(r"帮我找|找一下|之前|那张|一张|那个|视频|照片|截图|图片|画面|里面|的|了")
+_CHUNK_RE = re.compile(r"[A-Za-z0-9_./:+-]{2,}|[\u3400-\u9fff]{2,}")
+_CJK_FULL_RE = re.compile(r"[\u3400-\u9fff]+")
+_IDENT_RE = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+|\b[a-z]{1,5}\d{2,}[a-z0-9]*\b")
+
 
 def text_coverage(query: str, text: str) -> float:
-    significant = re.sub(r"帮我找|找一下|之前|那张|一张|那个|视频|照片|截图|图片|画面|里面|的|了", "", query.lower())
+    query_lower = query.lower()
+    significant = _STOPWORDS_RE.sub("", query_lower)
     positions = {index for index, character in enumerate(significant) if character.isalnum()}
     if not positions:
-        return 1.0 if query.lower() in text else 0.0
+        return 1.0 if query_lower in text else 0.0
     covered: set[int] = set()
     for term in fallback_terms(significant):
         if len(term) < 2 or term not in text:
@@ -37,15 +44,103 @@ def text_coverage(query: str, text: str) -> float:
 
 def fallback_terms(query: str) -> list[str]:
     normalized = query.lower().strip()
-    chunks = re.findall(r"[A-Za-z0-9_./:+-]{2,}|[\u3400-\u9fff]{2,}", normalized)
+    chunks = _CHUNK_RE.findall(normalized)
     chinese_ngrams: list[str] = []
     for chunk in chunks:
-        if not re.fullmatch(r"[\u3400-\u9fff]+", chunk):
+        if not _CJK_FULL_RE.fullmatch(chunk):
             continue
         for size in (3, 2):
             if len(chunk) > size:
                 chinese_ngrams.extend(chunk[index:index + size] for index in range(len(chunk) - size + 1))
     return list(dict.fromkeys([normalized, *chunks, *chinese_ngrams]))
+
+
+def _fts_quote(term: str) -> str:
+    return '"' + term.replace('"', '""') + '"'
+
+
+def fts_candidate_query(
+    query_lower: str,
+    terms: list[str],
+    identifiers: list[str],
+    requested_types: set[str],
+) -> str | None:
+    """Build a zero-false-negative SQLite FTS5 trigram query, or None to fall back to full scan."""
+    if identifiers:
+        if all(len(tok) >= 3 and "\x00" not in tok for tok in identifiers):
+            return " AND ".join(_fts_quote(tok) for tok in dict.fromkeys(identifiers))
+        return None
+    if requested_types:
+        return None
+    candidates = [c for c in dict.fromkeys(([query_lower] if query_lower else []) + terms) if c]
+    if not candidates:
+        return None
+    if all(len(c) >= 3 and "\x00" not in c for c in candidates):
+        return " OR ".join(_fts_quote(c) for c in candidates)
+    return None
+
+
+def score_lexical_docs(
+    query: str,
+    terms: list[str],
+    requested_types: list[str],
+    docs: list[tuple[str, str, str]],
+) -> list[tuple[str, float, list[str], float]]:
+    query_lower_full = query.lower()
+    query_lower = query_lower_full.strip()
+    identifiers = _IDENT_RE.findall(query_lower)
+    requested_type_set = set(requested_types)
+    weighted_terms = [(term, max(1.0, 5.0 - index * 0.15)) for index, term in enumerate(terms)]
+
+    significant = _STOPWORDS_RE.sub("", query_lower_full)
+    pos_mask = 0
+    pos_count = 0
+    for index, character in enumerate(significant):
+        if character.isalnum():
+            pos_mask |= 1 << index
+            pos_count += 1
+    cov_terms: list[tuple[str, int]] = []
+    if pos_count > 0:
+        for cov_term in fallback_terms(significant):
+            if len(cov_term) < 2:
+                continue
+            span_mask = 0
+            for match in re.finditer(re.escape(cov_term), significant):
+                span_mask |= ((1 << (match.end() - match.start())) - 1) << match.start()
+            span_mask &= pos_mask
+            if span_mask:
+                cov_terms.append((cov_term, span_mask))
+
+    results: list[tuple[str, float, list[str], float]] = []
+    for asset_id, search_text, asset_type in docs:
+        text = search_text.lower()
+        if identifiers and not all(token in text for token in identifiers):
+            continue
+        matched: list[str] = []
+        score = 0.0
+        if query_lower and query_lower in text:
+            score += 12.0
+            matched.append(query)
+        for term, weight in weighted_terms:
+            if term in text:
+                score += weight
+                matched.append(term)
+        if requested_type_set and asset_type in requested_type_set:
+            score += 2.0
+        if score <= 0.0:
+            continue
+        if pos_count == 0:
+            coverage = 1.0 if query_lower_full in text else 0.0
+        else:
+            hit_mask = 0
+            for cov_term, span_mask in cov_terms:
+                if cov_term in text:
+                    hit_mask |= span_mask
+                    if hit_mask == pos_mask:
+                        break
+            coverage = hit_mask.bit_count() / pos_count
+        results.append((asset_id, round(score, 3), list(dict.fromkeys(matched)), coverage))
+    return results
 
 
 def search(
@@ -72,36 +167,40 @@ def search(
 
     terms = [term for term in plan.get("terms", []) if len(term.strip()) >= 2]
     requested_types = {str(value) for value in plan.get("asset_types", [])}
-    documents = {
-        row["asset_id"]: row for row in db.search_docs(include_unindexed=hybrid)
-        if asset_type is None or row["asset_type"] == asset_type
-    }
-    lexical: list[dict[str, Any]] = []
     query_lower = query.lower().strip()
-    identifiers = re.findall(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+|\b[a-z]{1,5}\d{2,}[a-z0-9]*\b", query_lower)
-    for row in documents.values():
-        text = row["search_text"].lower()
-        if not all(token in text for token in identifiers):
-            continue
-        matched: list[str] = []
-        score = 0.0
-        if query_lower and query_lower in text:
-            score += 12.0
-            matched.append(query)
-        for index, term in enumerate(terms):
-            if term in text:
-                score += max(1.0, 5.0 - index * 0.15)
-                matched.append(term)
-        if requested_types and row["asset_type"] in requested_types:
-            score += 2.0
-        coverage = text_coverage(query, text)
-        if score <= 0:
-            continue
+    identifiers = _IDENT_RE.findall(query_lower)
+    fts_query = fts_candidate_query(query_lower, terms, identifiers, requested_types)
+
+    use_fts = False
+    documents: dict[str, Any] = {}
+    searchable_count = 0
+    if fts_query is not None:
+        try:
+            fts_rows = db.search_docs_fts(fts_query, asset_type=asset_type)
+            documents = {row["asset_id"]: row for row in fts_rows}
+            searchable_count = db.searchable_count(include_unindexed=hybrid, asset_type=asset_type)
+            use_fts = True
+        except sqlite3.OperationalError:
+            use_fts = False
+
+    if not use_fts:
+        documents = {
+            row["asset_id"]: row for row in db.search_docs(include_unindexed=hybrid)
+            if asset_type is None or row["asset_type"] == asset_type
+        }
+        searchable_count = len(documents)
+
+    docs = [(row["asset_id"], row["search_text"], row["asset_type"]) for row in documents.values()]
+    lexical: list[dict[str, Any]] = []
+    for asset_id, score, matched_terms, coverage in score_lexical_docs(
+        query, terms, sorted(requested_types), docs
+    ):
+        row = documents[asset_id]
         lexical.append(
             {
-                "asset_id": row["asset_id"],
-                "score": round(score, 3),
-                "matched_terms": list(dict.fromkeys(matched)),
+                "asset_id": asset_id,
+                "score": score,
+                "matched_terms": matched_terms,
                 "text_coverage": coverage,
                 "asset_type": row["asset_type"],
                 "short_caption": row["short_caption"],
@@ -117,20 +216,37 @@ def search(
     results = [item for item in lexical if item["asset_id"] in strong_text_ids]
     plan["retrieval"] = "lexical"
     plan["embedding_count"] = 0
-    plan["searchable_count"] = len(documents)
+    plan["searchable_count"] = searchable_count
     if hybrid:
-        vectors = [
-            row for row in (db.active_embeddings(EMBEDDING_NAMESPACE, decode_vectors=False) + db.active_embeddings(VIDEO_EMBEDDING_NAMESPACE, decode_vectors=False))
-            if compatible(row) and row["asset_id"] in documents
-        ]
+        all_embeddings = (
+            db.active_embeddings(EMBEDDING_NAMESPACE, decode_vectors=False)
+            + db.active_embeddings(VIDEO_EMBEDDING_NAMESPACE, decode_vectors=False)
+        )
+        if use_fts:
+            if asset_type is None:
+                vectors = [row for row in all_embeddings if compatible(row)]
+            else:
+                allowed_ids = db.available_asset_ids(asset_type=asset_type)
+                vectors = [row for row in all_embeddings if compatible(row) and row["asset_id"] in allowed_ids]
+        else:
+            vectors = [row for row in all_embeddings if compatible(row) and row["asset_id"] in documents]
         plan["embedding_count"] = len(vectors)
         if vectors:
             try:
                 query_vector = normalized(list(embed_query(query)))
                 ranked = []
-                candidates = [row for row in vectors if all(
-                    token in documents[row["asset_id"]]["search_text"].lower() for token in identifiers
-                )]
+                if use_fts and not identifiers:
+                    candidates = vectors
+                elif use_fts:
+                    candidates = [
+                        row for row in vectors
+                        if row["asset_id"] in documents
+                        and all(token in documents[row["asset_id"]]["search_text"].lower() for token in identifiers)
+                    ]
+                else:
+                    candidates = [row for row in vectors if all(
+                        token in documents[row["asset_id"]]["search_text"].lower() for token in identifiers
+                    )]
                 if candidates:
                     # Keep SQLite's packed float32 buffers until the numeric operation;
                     # expanding every component into Python floats dominates warm searches.
@@ -164,6 +280,12 @@ def search(
                 plan["retrieval"] = "hybrid"
             except Exception as error:
                 plan["embedding_error"] = f"{type(error).__name__}: {error}"
+
+    if use_fts and results:
+        missing_ids = [result["asset_id"] for result in results[:limit] if result["asset_id"] not in documents]
+        if missing_ids:
+            for row in db.search_docs_by_ids(missing_ids, include_unindexed=hybrid, asset_type=asset_type):
+                documents[row["asset_id"]] = row
 
     output = []
     for result in results[:limit]:
@@ -209,3 +331,22 @@ def merge_rankings(lexical: list[dict], visual: list[dict], limit: int) -> list[
         preferred = lexical[0]["asset_id"]
         results.sort(key=lambda item: item["asset_id"] != preferred)
     return results
+
+# >>> fast-anything: photo_search.search.score_lexical_docs >>>
+# Uses the verified Rust port. FAST_ANYTHING_DISABLE=1 runs the Python above instead.
+# Undo with:  fast-anything disable photo_search.search.score_lexical_docs
+def _fast_anything_load():
+    import os, sys
+    if os.environ.get("FAST_ANYTHING_DISABLE"):
+        return None
+    lib = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.fast/lib"))
+    if lib not in sys.path:
+        sys.path.append(lib)
+    try:
+        from fa_photo_search_search_score_lexical_docs import score_lexical_docs
+    except ImportError:
+        return None
+    return score_lexical_docs
+score_lexical_docs = _fast_anything_load() or score_lexical_docs
+del _fast_anything_load
+# <<< fast-anything: photo_search.search.score_lexical_docs <<<

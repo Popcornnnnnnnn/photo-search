@@ -9,6 +9,9 @@ import SwiftUI
 struct Main {
     static func main() {
         let args = CommandLine.arguments
+        if args.contains("--search-json") {
+            exit(PhotoSearchBridgeHandler.runCLI(args: args))
+        }
         if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
             let size = parseSize(args) ?? CGSize(width: 800, height: 600)
             MainActor.assumeIsolated {
@@ -55,7 +58,7 @@ struct LiquidGlassDemoApp: App {
         // no File ▸ New Window duplicates and `openWindow(id:)` from the tray
         // always brings the same window to front.
         Window("Photo Search", id: "main") {
-            ContentView()
+            ContentView(encoder: appDelegate.encoder)
                 // Room for the sidebars + a padded main column on all sides.
                 .frame(minWidth: 820, minHeight: 560)
                 // Keep an accessible window name; the native toolbar hides its
@@ -63,6 +66,7 @@ struct LiquidGlassDemoApp: App {
                 .navigationTitle("Photo Search")
                 .environment(theme)
         }
+        .handlesExternalEvents(matching: ["*"])
         // AppKit lays out the traffic lights and toolbar as one native row.
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: false))
@@ -132,16 +136,50 @@ private struct TrayMenu: View {
 /// bar, and a window that activates/comes-to-front on click. Without `.regular`,
 /// a non-bundled executable defaults to an accessory policy (no Dock, can't
 /// become the active app).
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    let encoder = PhotoEncoderStore()
+    private var bridge: PhotoSearchBridgeServer?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppLog.app.notice("Launched \(AppInfo.name, privacy: .public) \(AppInfo.versionString, privacy: .public)")
+        let background = CommandLine.arguments.contains("--background")
+            || ProcessInfo.processInfo.environment["PHOTO_SEARCH_BACKGROUND"] == "1"
         NSApp.setActivationPolicy(.regular)
-        MainActor.assumeIsolated {
-            if let icon = AppIcon.make() {
-                NSApp.applicationIconImage = icon
-            }
+        if let icon = AppIcon.make() {
+            NSApp.applicationIconImage = icon
         }
-        NSApp.activate(ignoringOtherApps: true)
+        let server = PhotoSearchBridgeServer(
+            encoder: encoder,
+            idleOffloadInterval: 600,
+            shouldIdleOffload: {
+                await MainActor.run {
+                    !NSApp.windows.contains { $0.isVisible && $0.title == "Photo Search" }
+                }
+            }
+        )
+        do {
+            try server.start()
+            bridge = server
+        } catch {
+            AppLog.app.error("Failed to start search bridge socket: \(error.localizedDescription, privacy: .public)")
+        }
+        if background {
+            DispatchQueue.main.async {
+                for window in NSApp.windows {
+                    window.orderOut(nil)
+                }
+                NSApp.hide(nil)
+            }
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        bridge?.stop()
+        bridge = nil
+        encoder.shutdown()
     }
 
     // Keep the app running after its last window closes (standard macOS behavior):

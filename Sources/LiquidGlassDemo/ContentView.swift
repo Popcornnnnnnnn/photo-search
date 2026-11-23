@@ -29,7 +29,7 @@ struct ContentView: View {
     @State private var searchHistory = SearchHistoryStore()
     @State private var connection = PhotoConnectionStore()
     @State private var indexActivity = PhotoIndexActivityStore()
-    @State private var encoder = PhotoEncoderStore()
+    @State private var encoder: PhotoEncoderStore
     @State private var landingQuery = ""
     @State private var hasEnteredSearch = false
     @State private var thumbnailContentMode: ContentMode = .fill
@@ -37,6 +37,7 @@ struct ContentView: View {
     @Environment(ThemeStore.self) private var theme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openWindow) private var openWindow
 
     init(backdrop: MeshBackdrop = .demo,
          card: GlassCardModel = .demo,
@@ -44,12 +45,14 @@ struct ContentView: View {
          showsOnboarding: Bool = false,
          showsPointerEffects: Bool = true,
          startsInLibrary: Bool = false,
-         opensSettingsSection: SettingsSection? = nil) {
+         opensSettingsSection: SettingsSection? = nil,
+         encoder: PhotoEncoderStore? = nil) {
         self.backdrop = backdrop
         self.card = card
         self.windowMaterial = windowMaterial
         self.showsPointerEffects = showsPointerEffects
         _hasEnteredSearch = State(initialValue: startsInLibrary)
+        _encoder = State(initialValue: encoder ?? PhotoEncoderStore())
         let initialState = UIState(showsOnboarding: showsOnboarding)
         if let opensSettingsSection {
             initialState.settingsSection = opensSettingsSection
@@ -363,12 +366,12 @@ struct ContentView: View {
 
     /// Enter the library without a query: the grid then shows every indexed photo,
     /// which is the only way in for someone who just wants to look around.
-    private func enterLibrary(section: PhotoSection = .all) {
+    private func enterLibrary(section: PhotoSection = .all, timeFilter: PhotoTimeFilter = .all) {
         libraryJumpNotice = nil
         landingQuery = ""
         store.closeViewer()
         store.section = section
-        store.timeFilter = .all
+        store.timeFilter = timeFilter
         store.clearSearch()
         store.reload(encoder: encoder)
         hasEnteredSearch = true
@@ -496,8 +499,29 @@ struct ContentView: View {
 
     private func handle(_ url: URL) {
         guard let link = DeepLink(url: url) else { return }
+        openWindow(id: "main")
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
         switch link {
-        case .theme(let id): theme.id = id
+        case .theme(let id):
+            theme.id = id
+        case .search(let query, let section, let timeFilter):
+            ui.showSettings = false
+            randomBrowsePresented = false
+            photoReviewPresented = false
+            if query.isEmpty {
+                enterLibrary(section: section, timeFilter: timeFilter)
+            } else {
+                store.timeFilter = timeFilter
+                beginSearch(query, section: section)
+            }
+        case .asset(let id):
+            ui.showSettings = false
+            randomBrowsePresented = false
+            photoReviewPresented = false
+            libraryJumpNotice = nil
+            hasEnteredSearch = true
+            store.openAsset(id: id)
         }
     }
 

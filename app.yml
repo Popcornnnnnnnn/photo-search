@@ -1,35 +1,34 @@
-# Release configuration for LiquidGlassDemo (direct-download distribution).
+# Release configuration for Photo Search (direct-download distribution).
 #
-# Values marked TODO must be filled in before the first signed release — see
-# RELEASE.md. Nothing here is secret (no private keys / passwords); those live in
-# your keychain and the notarytool credential profile.
+# Nothing here is secret (no private keys / passwords); those live in your
+# keychain and the notarytool credential profile.
 
 app_name: "Photo Search"
 executable: "LiquidGlassDemo"                 # SwiftPM product name
 bundle_identifier: "com.popcornnn.PhotoSearch"
 category: "public.app-category.photography"
-# Custom URL scheme for deep links, e.g. liquidglassdemo://theme/ember (see
+# Custom URL scheme for deep links, e.g. photosearch://search?q=coffee (see
 # DeepLink.swift). Written into the packaged app's Info.plist.
 url_scheme: "photosearch"
 minimum_system_version: "15.0"
 
-github_owner: "SohrabZ"
-github_repo: "swiftui-macos-app"
+github_owner: "Popcornnnnnnnn"
+github_repo: "photo-search"
 
-# The Sparkle appcast the app polls for updates. Defaults to the appcast.xml
-# committed here, served raw from the default branch. (GitHub Pages or your own
-# site also work — just keep this URL and Info.plist's SUFeedURL in sync.)
-feed_url: ""
+# The Sparkle appcast the app polls for updates. Served raw from the default
+# branch (kept in sync by scripts/release.sh).
+feed_url: "https://raw.githubusercontent.com/Popcornnnnnnnn/photo-search/development/appcast.xml"
 
 # Base URL that release DMGs are downloaded from (GitHub Releases by default).
-download_base_url: ""
+download_base_url: "https://github.com/Popcornnnnnnnn/photo-search/releases/download"
 
-# --- Signing & notarization (TODO — see RELEASE.md; do NOT commit secrets) ---
+# --- Signing & notarization (do NOT commit secrets) ---
 # Developer ID Application identity, as shown by `security find-identity -v -p codesigning`.
-developer_id_application: ""
-apple_team_id: ""
+developer_id_application: "Developer ID Application: WEIZHI WANG (R26X7B8XDT)"
+apple_team_id: "R26X7B8XDT"
 # Keychain profile created via: xcrun notarytool store-credentials
-notarytool_keychain_profile: "LiquidGlassDemo Notary"                      # TODO
+# (Override locally with PHOTO_SEARCH_NOTARY_PROFILE if using a shared profile.)
+notarytool_keychain_profile: "photo-search-notary"
 # Base64 Ed25519 public key printed by Sparkle's `generate_keys` (private key
 # stays in your keychain). Injected into the app's Info.plist as SUPublicEDKey.
-sparkle_public_ed_key: ""
+sparkle_public_ed_key: "ZScBnd4pIKIFMuTo9+MN4ZlEUr14ZYrUNJsxJEZEbFY="

@@ -136,36 +136,43 @@ class Database:
             pass
 
     def _migrate(self) -> None:
-        if self.conn.execute("PRAGMA user_version").fetchone()[0] >= 1:
+        version = self.conn.execute("PRAGMA user_version").fetchone()[0]
+        if version >= 2:
             return
         with self.conn:
             self.conn.execute("BEGIN IMMEDIATE")
-            columns = {row[1] for row in self.conn.execute("PRAGMA table_info(assets)")}
-            if "is_available" not in columns:
-                self.conn.execute("ALTER TABLE assets ADD COLUMN is_available INTEGER NOT NULL DEFAULT 1")
-            columns = {row[1] for row in self.conn.execute("PRAGMA table_info(embeddings)")}
-            if "input_sha256" not in columns:
-                self.conn.execute("ALTER TABLE embeddings RENAME TO embeddings_legacy")
-                self.conn.execute("""
-                    CREATE TABLE embeddings (
-                        asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
-                        namespace TEXT NOT NULL, model TEXT NOT NULL,
-                        model_revision TEXT NOT NULL DEFAULT '', prompt_version TEXT NOT NULL DEFAULT '',
-                        input_sha256 TEXT NOT NULL, dimensions INTEGER NOT NULL, vector BLOB NOT NULL,
-                        created_at TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1,
-                        PRIMARY KEY(asset_id, namespace, model, model_revision, prompt_version, input_sha256)
-                    )
-                """)
-                # Previous imports never replaced cached previews. Bind those vectors
-                # to the existing cache hash before enabling source-change detection.
-                self.conn.execute("""
-                    INSERT INTO embeddings
-                    SELECT e.asset_id,e.namespace,e.model,e.model_revision,e.prompt_version,
-                           a.sha256,e.dimensions,e.vector,e.created_at,e.is_active
-                    FROM embeddings_legacy e JOIN assets a ON a.id=e.asset_id
-                """)
-                self.conn.execute("DROP TABLE embeddings_legacy")
-            self.conn.execute("PRAGMA user_version=1")
+            if version < 1:
+                columns = {row[1] for row in self.conn.execute("PRAGMA table_info(assets)")}
+                if "is_available" not in columns:
+                    self.conn.execute("ALTER TABLE assets ADD COLUMN is_available INTEGER NOT NULL DEFAULT 1")
+                columns = {row[1] for row in self.conn.execute("PRAGMA table_info(embeddings)")}
+                if "input_sha256" not in columns:
+                    self.conn.execute("ALTER TABLE embeddings RENAME TO embeddings_legacy")
+                    self.conn.execute("""
+                        CREATE TABLE embeddings (
+                            asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                            namespace TEXT NOT NULL, model TEXT NOT NULL,
+                            model_revision TEXT NOT NULL DEFAULT '', prompt_version TEXT NOT NULL DEFAULT '',
+                            input_sha256 TEXT NOT NULL, dimensions INTEGER NOT NULL, vector BLOB NOT NULL,
+                            created_at TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1,
+                            PRIMARY KEY(asset_id, namespace, model, model_revision, prompt_version, input_sha256)
+                        )
+                    """)
+                    # Previous imports never replaced cached previews. Bind those vectors
+                    # to the existing cache hash before enabling source-change detection.
+                    self.conn.execute("""
+                        INSERT INTO embeddings
+                        SELECT e.asset_id,e.namespace,e.model,e.model_revision,e.prompt_version,
+                               a.sha256,e.dimensions,e.vector,e.created_at,e.is_active
+                        FROM embeddings_legacy e JOIN assets a ON a.id=e.asset_id
+                    """)
+                    self.conn.execute("DROP TABLE embeddings_legacy")
+            if version < 2:
+                self.conn.execute("DELETE FROM search_fts")
+                self.conn.execute(
+                    "INSERT INTO search_fts(asset_id, search_text) SELECT asset_id, search_text FROM search_docs"
+                )
+            self.conn.execute("PRAGMA user_version=2")
 
     def close(self) -> None:
         self.conn.close()
@@ -473,6 +480,85 @@ class Database:
                 (include_unindexed,),
             )
         )
+
+    def searchable_count(self, *, include_unindexed: bool = False, asset_type: str | None = None) -> int:
+        if not include_unindexed:
+            if asset_type is None:
+                sql = "SELECT COUNT(*) FROM assets a JOIN search_docs d ON a.id=d.asset_id WHERE a.is_available=1"
+                return int(self.conn.execute(sql).fetchone()[0])
+            sql = "SELECT COUNT(*) FROM assets a JOIN search_docs d ON a.id=d.asset_id WHERE a.is_available=1 AND d.asset_type=?"
+            return int(self.conn.execute(sql, (asset_type,)).fetchone()[0])
+        if asset_type is None:
+            return int(self.conn.execute("SELECT COUNT(*) FROM assets a WHERE a.is_available=1").fetchone()[0])
+        sql = """
+            SELECT COUNT(*)
+            FROM assets a LEFT JOIN search_docs d ON a.id=d.asset_id
+            WHERE a.is_available=1
+              AND COALESCE(d.asset_type, CASE WHEN json_extract(a.metadata_json, '$.media_type')='video' THEN 'video' ELSE 'other' END) = ?
+        """
+        return int(self.conn.execute(sql, (asset_type,)).fetchone()[0])
+
+    def search_docs_fts(self, fts_query: str, *, asset_type: str | None = None) -> list[sqlite3.Row]:
+        return list(
+            self.conn.execute(
+                """
+                SELECT a.id AS asset_id, d.asset_type,
+                       d.short_caption, d.search_text, d.updated_at,
+                       a.thumbnail_path, a.file_path, a.filename, a.captured_at, a.width, a.height
+                FROM (SELECT DISTINCT asset_id FROM search_fts WHERE search_fts MATCH ?) f
+                JOIN assets a ON a.id = f.asset_id
+                JOIN search_docs d ON d.asset_id = f.asset_id
+                WHERE a.is_available = 1 AND (? IS NULL OR d.asset_type = ?)
+                """,
+                (fts_query, asset_type, asset_type),
+            )
+        )
+
+    def search_docs_by_ids(
+        self,
+        asset_ids: list[str],
+        *,
+        include_unindexed: bool = False,
+        asset_type: str | None = None,
+    ) -> list[sqlite3.Row]:
+        if not asset_ids:
+            return []
+        rows: list[sqlite3.Row] = []
+        unique_ids = list(dict.fromkeys(asset_ids))
+        for start in range(0, len(unique_ids), 500):
+            chunk = unique_ids[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            sql = f"""
+                SELECT a.id AS asset_id,
+                       COALESCE(d.asset_type, CASE WHEN json_extract(a.metadata_json, '$.media_type')='video' THEN 'video' ELSE 'other' END) AS asset_type,
+                       COALESCE(d.short_caption, '') AS short_caption,
+                       COALESCE(d.search_text, '') AS search_text, d.updated_at,
+                       a.thumbnail_path, a.file_path, a.filename, a.captured_at, a.width, a.height
+                FROM assets a LEFT JOIN search_docs d ON a.id=d.asset_id
+                WHERE a.id IN ({placeholders})
+                  AND a.is_available=1
+                  AND (? OR d.asset_id IS NOT NULL)
+            """
+            params: list[Any] = [*chunk, include_unindexed]
+            if asset_type is not None:
+                sql += " AND COALESCE(d.asset_type, CASE WHEN json_extract(a.metadata_json, '$.media_type')='video' THEN 'video' ELSE 'other' END) = ?"
+                params.append(asset_type)
+            rows.extend(self.conn.execute(sql, params))
+        return rows
+
+    def available_asset_ids(self, *, asset_type: str | None = None) -> set[str]:
+        if asset_type is None:
+            return {row[0] for row in self.conn.execute("SELECT id FROM assets WHERE is_available=1")}
+        rows = self.conn.execute(
+            """
+            SELECT a.id
+            FROM assets a LEFT JOIN search_docs d ON a.id=d.asset_id
+            WHERE a.is_available=1
+              AND COALESCE(d.asset_type, CASE WHEN json_extract(a.metadata_json, '$.media_type')='video' THEN 'video' ELSE 'other' END) = ?
+            """,
+            (asset_type,),
+        )
+        return {row[0] for row in rows}
 
     def upsert_embedding(
         self,
