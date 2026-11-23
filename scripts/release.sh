@@ -70,11 +70,18 @@ rm -f "$DMG"
 hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 rm -rf "$STAGE"
 
-# 3. Notarize the DMG and staple the ticket.
+# 3. Sign, notarize the DMG, and staple tickets to both DMG and .app.
+codesign --force --timestamp --sign "$DEV_ID" "$DMG"
+NOTARY_ARGS=(--keychain-profile "$PROFILE")
+if [[ -n "${PHOTO_SEARCH_NOTARY_KEY:-}" && -n "${PHOTO_SEARCH_NOTARY_KEY_ID:-}" && -n "${PHOTO_SEARCH_NOTARY_ISSUER:-}" ]]; then
+  NOTARY_ARGS=(--key "$PHOTO_SEARCH_NOTARY_KEY" --key-id "$PHOTO_SEARCH_NOTARY_KEY_ID" --issuer "$PHOTO_SEARCH_NOTARY_ISSUER")
+fi
 echo "==> Notarizing (this waits on Apple)…"
-xcrun notarytool submit "$DMG" --keychain-profile "$PROFILE" --wait
+xcrun notarytool submit "$DMG" "${NOTARY_ARGS[@]}" --wait
 xcrun stapler staple "$DMG"
 xcrun stapler validate "$DMG"
+xcrun stapler staple "$APP"
+xcrun stapler validate "$APP"
 
 # 4. Regenerate the appcast (generate_appcast reads the private key from the
 #    keychain and signs each archive). Keep past DMGs in dist/updates to retain
