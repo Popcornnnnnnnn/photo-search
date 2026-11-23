@@ -11,7 +11,7 @@
 #   - gh authenticated (gh auth status)
 #
 # Usage:
-#   scripts/release.sh --version 1.0.0 [--build N] [--notes path/to/notes.md]
+#   scripts/release.sh --version 1.0.0 [--build N] [--notes path/to/notes.md] [--prerelease]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -28,11 +28,13 @@ DOWNLOAD_BASE="$(yaml_get download_base_url)"
 VERSION=""
 BUILD="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 NOTES=""
+PRERELEASE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --version) VERSION="$2"; shift 2 ;;
-    --build)   BUILD="$2";   shift 2 ;;
-    --notes)   NOTES="$2";   shift 2 ;;
+    --version)    VERSION="$2"; shift 2 ;;
+    --build)      BUILD="$2";   shift 2 ;;
+    --notes)      NOTES="$2";   shift 2 ;;
+    --prerelease) PRERELEASE=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -57,8 +59,9 @@ echo "==> Releasing $APP_NAME $VERSION (build $BUILD)"
 scripts/build_app.sh --version "$VERSION" --build "$BUILD"
 APP="dist/$APP_NAME.app"
 
-# 2. Package a DMG (app + drag-to-Applications shortcut).
-DMG="dist/${APP_NAME}_v${VERSION}.dmg"
+# 2. Package a DMG without spaces so GitHub Releases and Sparkle appcast URLs match.
+DMG_SLUG="${APP_NAME// /}"
+DMG="dist/${DMG_SLUG}-v${VERSION}.dmg"
 STAGE="$(mktemp -d)"
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
@@ -69,6 +72,7 @@ hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 echo "==> Notarizing (this waits on Apple)…"
 xcrun notarytool submit "$DMG" --keychain-profile "$PROFILE" --wait
 xcrun stapler staple "$DMG"
+xcrun stapler validate "$DMG"
 
 # 4. Regenerate the appcast (generate_appcast reads the private key from the
 #    keychain and signs each archive). Keep past DMGs in dist/updates to retain
@@ -82,7 +86,9 @@ cp "$UPDATES/appcast.xml" ./appcast.xml
 # 5. Publish the GitHub release with the DMG attached.
 NOTES_ARG=(--generate-notes)
 [[ -n "$NOTES" ]] && NOTES_ARG=(--notes-file "$NOTES")
-gh release create "v$VERSION" "$DMG" --title "$APP_NAME $VERSION" "${NOTES_ARG[@]}"
+PRERELEASE_ARG=()
+[[ "$PRERELEASE" == 1 ]] && PRERELEASE_ARG=(--prerelease)
+gh release create "v$VERSION" "$DMG" --target "$(git rev-parse HEAD)" --title "$APP_NAME $VERSION" "${PRERELEASE_ARG[@]}" "${NOTES_ARG[@]}"
 
 echo
 echo "==> Done. Commit and push the updated appcast.xml so the feed URL serves it:"

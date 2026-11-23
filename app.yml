@@ -17,7 +17,7 @@ github_repo: "photo-search"
 
 # The Sparkle appcast the app polls for updates. Served raw from the default
 # branch (kept in sync by scripts/release.sh).
-feed_url: "https://raw.githubusercontent.com/Popcornnnnnnnn/photo-search/main/appcast.xml"
+feed_url: "https://raw.githubusercontent.com/Popcornnnnnnnn/photo-search/development/appcast.xml"
 
 # Base URL that release DMGs are downloaded from (GitHub Releases by default).
 download_base_url: "https://github.com/Popcornnnnnnnn/photo-search/releases/download"
