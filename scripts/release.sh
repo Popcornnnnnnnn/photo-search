@@ -63,10 +63,12 @@ APP="dist/$APP_NAME.app"
 DMG_SLUG="${APP_NAME// /}"
 DMG="dist/${DMG_SLUG}-v${VERSION}.dmg"
 STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 rm -f "$DMG"
 hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+rm -rf "$STAGE"
 
 # 3. Notarize the DMG and staple the ticket.
 echo "==> Notarizing (this waits on Apple)…"

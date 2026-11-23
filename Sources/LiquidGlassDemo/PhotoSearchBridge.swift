@@ -350,7 +350,7 @@ enum PhotoSearchBridgeHandler {
 
     static func runCLI(args: [String]) -> Int32 {
         let dbPath = value(of: "--db", in: args) ?? PhotoSearchDatabase.path
-        let op = args.contains("--ping") ? "ping" : "search"
+        let op = hasFlag("--ping", in: args) ? "ping" : "search"
         let request = BridgeRequest(
             op: op,
             query: value(of: "--query", in: args),
@@ -472,8 +472,33 @@ enum PhotoSearchBridgeHandler {
     }
 
     private static func value(of flag: String, in args: [String]) -> String? {
-        guard let index = args.firstIndex(of: flag), index + 1 < args.count else { return nil }
-        return args[index + 1]
+        var index = 1
+        while index < args.count {
+            if args[index] == flag, index + 1 < args.count {
+                return args[index + 1]
+            }
+            if args[index].hasPrefix("--"), index + 1 < args.count,
+               args[index] != "--search-json", args[index] != "--ping", args[index] != "--background" {
+                index += 2
+            } else {
+                index += 1
+            }
+        }
+        return nil
+    }
+
+    private static func hasFlag(_ flag: String, in args: [String]) -> Bool {
+        var index = 1
+        while index < args.count {
+            if args[index] == flag { return true }
+            if args[index].hasPrefix("--"), args[index] != "--search-json", args[index] != "--ping",
+               args[index] != "--background", index + 1 < args.count {
+                index += 2
+            } else {
+                index += 1
+            }
+        }
+        return false
     }
 }
 
@@ -612,7 +637,8 @@ final class PhotoSearchBridgeServer: @unchecked Sendable {
             acceptSource = nil
             return src
         }
-        sourceToCancel?.cancel()
+        guard let sourceToCancel else { return }
+        sourceToCancel.cancel()
         Darwin.unlink(socketPath)
     }
 
@@ -723,9 +749,14 @@ final class PhotoSearchBridgeServer: @unchecked Sendable {
                     )
                     if let self {
                         let op = request.op.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        let requestedHybrid = (request.mode ?? "hybrid")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                            .lowercased() != "lexical"
                         if op == "offload" {
                             self.cancelIdleOffload()
-                        } else if (op == "load" && response.ok) || (op == "search" && response.visualSearchRan == true) {
+                        } else if (op == "load" && response.ok)
+                            || (op == "search" && (response.visualSearchRan == true
+                                || (requestedHybrid && response.encoder?.state == "ready"))) {
                             self.scheduleIdleOffload()
                         }
                     }

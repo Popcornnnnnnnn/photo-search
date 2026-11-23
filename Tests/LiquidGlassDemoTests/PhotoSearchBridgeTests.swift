@@ -288,4 +288,21 @@ import Testing
         try await Task.sleep(for: .milliseconds(300))
         #expect(counter.current == 1)
     }
+
+    @Test func unstartedServerStopDoesNotUnlinkActiveSocket() throws {
+        let fixture = try makeFixture()
+        defer { cleanUp(fixture) }
+
+        let active = PhotoSearchBridgeServer(socketPath: fixture.socketPath, databasePath: fixture.dbPath)
+        try active.start()
+        defer { active.stop() }
+        #expect(FileManager.default.fileExists(atPath: fixture.socketPath))
+
+        let bystander = PhotoSearchBridgeServer(socketPath: fixture.socketPath, databasePath: fixture.dbPath)
+        bystander.stop()
+        #expect(FileManager.default.fileExists(atPath: fixture.socketPath))
+
+        let pong = try sendSocketJSON(fixture.socketPath, json: #"{"op":"ping"}"#)
+        #expect(pong.ok)
+    }
 }

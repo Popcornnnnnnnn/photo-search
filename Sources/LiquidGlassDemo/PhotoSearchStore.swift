@@ -400,10 +400,12 @@ enum PhotoSearchDatabase {
         return try read(at: databasePath) { db in
             let sql = """
                 SELECT a.id, a.thumbnail_path, a.file_path, a.filename, a.captured_at,
-                       a.width, a.height, a.metadata_json, d.asset_type, d.short_caption,
+                       a.width, a.height, a.metadata_json,
+                       COALESCE(d.asset_type, CASE WHEN json_extract(a.metadata_json, '$.media_type')='video' THEN 'video' ELSE 'other' END) AS asset_type,
+                       COALESCE(d.short_caption, '') AS short_caption,
                        j.model, j.data_json
                 FROM assets AS a
-                JOIN search_docs AS d ON d.asset_id = a.id
+                LEFT JOIN search_docs AS d ON d.asset_id = a.id
                 LEFT JOIN artifacts AS j ON j.asset_id = a.id AND j.kind = 'annotation'
                     AND j.is_active = 1 AND j.input_sha256 = a.sha256
                 WHERE a.id = ? AND a.is_available = 1

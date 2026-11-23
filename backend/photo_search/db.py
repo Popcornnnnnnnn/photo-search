@@ -136,36 +136,43 @@ class Database:
             pass
 
     def _migrate(self) -> None:
-        if self.conn.execute("PRAGMA user_version").fetchone()[0] >= 1:
+        version = self.conn.execute("PRAGMA user_version").fetchone()[0]
+        if version >= 2:
             return
         with self.conn:
             self.conn.execute("BEGIN IMMEDIATE")
-            columns = {row[1] for row in self.conn.execute("PRAGMA table_info(assets)")}
-            if "is_available" not in columns:
-                self.conn.execute("ALTER TABLE assets ADD COLUMN is_available INTEGER NOT NULL DEFAULT 1")
-            columns = {row[1] for row in self.conn.execute("PRAGMA table_info(embeddings)")}
-            if "input_sha256" not in columns:
-                self.conn.execute("ALTER TABLE embeddings RENAME TO embeddings_legacy")
-                self.conn.execute("""
-                    CREATE TABLE embeddings (
-                        asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
-                        namespace TEXT NOT NULL, model TEXT NOT NULL,
-                        model_revision TEXT NOT NULL DEFAULT '', prompt_version TEXT NOT NULL DEFAULT '',
-                        input_sha256 TEXT NOT NULL, dimensions INTEGER NOT NULL, vector BLOB NOT NULL,
-                        created_at TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1,
-                        PRIMARY KEY(asset_id, namespace, model, model_revision, prompt_version, input_sha256)
-                    )
-                """)
-                # Previous imports never replaced cached previews. Bind those vectors
-                # to the existing cache hash before enabling source-change detection.
-                self.conn.execute("""
-                    INSERT INTO embeddings
-                    SELECT e.asset_id,e.namespace,e.model,e.model_revision,e.prompt_version,
-                           a.sha256,e.dimensions,e.vector,e.created_at,e.is_active
-                    FROM embeddings_legacy e JOIN assets a ON a.id=e.asset_id
-                """)
-                self.conn.execute("DROP TABLE embeddings_legacy")
-            self.conn.execute("PRAGMA user_version=1")
+            if version < 1:
+                columns = {row[1] for row in self.conn.execute("PRAGMA table_info(assets)")}
+                if "is_available" not in columns:
+                    self.conn.execute("ALTER TABLE assets ADD COLUMN is_available INTEGER NOT NULL DEFAULT 1")
+                columns = {row[1] for row in self.conn.execute("PRAGMA table_info(embeddings)")}
+                if "input_sha256" not in columns:
+                    self.conn.execute("ALTER TABLE embeddings RENAME TO embeddings_legacy")
+                    self.conn.execute("""
+                        CREATE TABLE embeddings (
+                            asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                            namespace TEXT NOT NULL, model TEXT NOT NULL,
+                            model_revision TEXT NOT NULL DEFAULT '', prompt_version TEXT NOT NULL DEFAULT '',
+                            input_sha256 TEXT NOT NULL, dimensions INTEGER NOT NULL, vector BLOB NOT NULL,
+                            created_at TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1,
+                            PRIMARY KEY(asset_id, namespace, model, model_revision, prompt_version, input_sha256)
+                        )
+                    """)
+                    # Previous imports never replaced cached previews. Bind those vectors
+                    # to the existing cache hash before enabling source-change detection.
+                    self.conn.execute("""
+                        INSERT INTO embeddings
+                        SELECT e.asset_id,e.namespace,e.model,e.model_revision,e.prompt_version,
+                               a.sha256,e.dimensions,e.vector,e.created_at,e.is_active
+                        FROM embeddings_legacy e JOIN assets a ON a.id=e.asset_id
+                    """)
+                    self.conn.execute("DROP TABLE embeddings_legacy")
+            if version < 2:
+                self.conn.execute("DELETE FROM search_fts")
+                self.conn.execute(
+                    "INSERT INTO search_fts(asset_id, search_text) SELECT asset_id, search_text FROM search_docs"
+                )
+            self.conn.execute("PRAGMA user_version=2")
 
     def close(self) -> None:
         self.conn.close()

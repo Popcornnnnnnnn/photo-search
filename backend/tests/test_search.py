@@ -1,6 +1,7 @@
 import json
 import math
 import random
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -352,3 +353,59 @@ class SearchTests(unittest.TestCase):
         # Mandatory identifier filter
         ident_scored = score_lexical_docs("err404_test opencode", ["err404_test", "opencode"], [], docs)
         self.assertEqual([r[0] for r in ident_scored], ["d1"])
+
+    def test_database_migrates_v1_to_v2_and_backfills_search_fts(self):
+        legacy_path = Path(self.temporary.name) / "legacy-v1.sqlite3"
+        conn = sqlite3.connect(legacy_path)
+        conn.executescript(
+            """
+            CREATE TABLE assets (
+                id TEXT PRIMARY KEY,
+                source_kind TEXT NOT NULL,
+                source_identifier TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                thumbnail_path TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                captured_at TEXT,
+                width INTEGER,
+                height INTEGER,
+                metadata_json TEXT NOT NULL,
+                imported_at TEXT NOT NULL,
+                is_available INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE artifacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                asset_id TEXT NOT NULL, kind TEXT NOT NULL, producer TEXT NOT NULL,
+                model TEXT NOT NULL DEFAULT '', prompt_version TEXT NOT NULL DEFAULT '',
+                schema_version TEXT NOT NULL DEFAULT '', preprocess_version TEXT NOT NULL DEFAULT '',
+                input_sha256 TEXT NOT NULL, data_json TEXT NOT NULL, raw_text TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE embeddings (
+                asset_id TEXT NOT NULL, namespace TEXT NOT NULL, model TEXT NOT NULL,
+                model_revision TEXT NOT NULL DEFAULT '', prompt_version TEXT NOT NULL DEFAULT '',
+                input_sha256 TEXT NOT NULL, dimensions INTEGER NOT NULL, vector BLOB NOT NULL,
+                created_at TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE search_docs (
+                asset_id TEXT PRIMARY KEY, asset_type TEXT NOT NULL DEFAULT 'other',
+                short_caption TEXT NOT NULL DEFAULT '', search_text TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            INSERT INTO assets VALUES (
+                'legacy-1', 'file', 'legacy-1', '/tmp/a.jpg', '/tmp/a.jpg', 'sha',
+                'a.jpg', NULL, 100, 100, '{}', '2026-01-01T00:00:00Z', 1
+            );
+            INSERT INTO search_docs VALUES (
+                'legacy-1', 'photo', 'Vintage espresso machine', 'vintage espresso machine counter', '2026-01-01T00:00:00Z'
+            );
+            PRAGMA user_version=1;
+            """
+        )
+        conn.close()
+
+        with Database(legacy_path) as migrated:
+            version = migrated.conn.execute("PRAGMA user_version").fetchone()[0]
+            self.assertEqual(version, 2)
+            hits = migrated.search_docs_fts('"espresso"')
+            self.assertEqual([row["asset_id"] for row in hits], ["legacy-1"])

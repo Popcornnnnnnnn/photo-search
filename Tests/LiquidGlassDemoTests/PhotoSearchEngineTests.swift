@@ -700,4 +700,22 @@ import Testing
         #expect(identOut.photos.map(\.id) == ["partial"])
     }
 
+    @Test func unpopulatedFTSTableFallsBackToFullScan() throws {
+        let fixture = try makeFixture()
+        defer { cleanUp(fixture) }
+        try addPhoto(fixture.path, id: "legacy-1", caption: "Espresso machine on wooden counter",
+                     capturedAt: "2026-01-02T00:00:00Z")
+        // Simulate an unmigrated DB where search_fts exists but was not backfilled yet.
+        let queue = try DatabaseQueue(path: fixture.path)
+        try queue.write { db in
+            try db.execute(sql: "CREATE VIRTUAL TABLE search_fts USING fts5(asset_id UNINDEXED, search_text, tokenize='trigram')")
+        }
+        try queue.close()
+
+        PhotoSearchEngine.clearCache()
+        let out = try PhotoSearchEngine.search(
+            query: "espresso", section: .all, databasePath: fixture.path
+        )
+        #expect(out.photos.map(\.id) == ["legacy-1"])
+    }
 }

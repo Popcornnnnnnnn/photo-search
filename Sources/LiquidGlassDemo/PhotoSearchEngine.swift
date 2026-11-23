@@ -608,8 +608,14 @@ enum PhotoSearchEngine {
             self.embeddings = embeddings
         }
         var cost: Int {
-            documents.reduce(0) { $0 + $1.searchText.utf8.count * 3 + ($1.annotationJSON?.utf8.count ?? 0) + 512 }
-                + (embeddings?.reduce(0) { $0 + $1.vector.count * 4 + 128 } ?? 0)
+            let docsCost = documents.reduce(0) { (total: Int, doc: Document) -> Int in
+                let annotationBytes = doc.annotationJSON?.utf8.count ?? 0
+                return total + (doc.searchText.utf8.count * 3) + annotationBytes + 512
+            }
+            let embeddingsCost = embeddings?.reduce(0) { (total: Int, item: Embedding) -> Int in
+                total + (item.vector.count * 4) + 128
+            } ?? 0
+            return docsCost + embeddingsCost
         }
     }
     private final class Cache: @unchecked Sendable {
@@ -997,10 +1003,13 @@ enum PhotoSearchEngine {
     }
 
     private static func databaseHasFTS(_ db: Database) throws -> Bool {
-        try Int.fetchOne(
+        guard try Int.fetchOne(
             db,
             sql: "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'search_fts'"
-        ) != nil
+        ) != nil else { return false }
+        let docsExist = try Int.fetchOne(db, sql: "SELECT 1 FROM search_docs LIMIT 1") != nil
+        if !docsExist { return true }
+        return try Int.fetchOne(db, sql: "SELECT 1 FROM search_fts LIMIT 1") != nil
     }
 
     private static func loadDocumentsFTS(

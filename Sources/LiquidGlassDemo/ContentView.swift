@@ -366,12 +366,12 @@ struct ContentView: View {
 
     /// Enter the library without a query: the grid then shows every indexed photo,
     /// which is the only way in for someone who just wants to look around.
-    private func enterLibrary(section: PhotoSection = .all) {
+    private func enterLibrary(section: PhotoSection = .all, timeFilter: PhotoTimeFilter = .all) {
         libraryJumpNotice = nil
         landingQuery = ""
         store.closeViewer()
         store.section = section
-        store.timeFilter = .all
+        store.timeFilter = timeFilter
         store.clearSearch()
         store.reload(encoder: encoder)
         hasEnteredSearch = true
@@ -509,10 +509,10 @@ struct ContentView: View {
             ui.showSettings = false
             randomBrowsePresented = false
             photoReviewPresented = false
-            store.timeFilter = timeFilter
             if query.isEmpty {
-                enterLibrary(section: section)
+                enterLibrary(section: section, timeFilter: timeFilter)
             } else {
+                store.timeFilter = timeFilter
                 beginSearch(query, section: section)
             }
         case .asset(let id):
