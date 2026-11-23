@@ -24,6 +24,8 @@ TEAM_ID="$(yaml_get apple_team_id)"
 PROFILE="${PHOTO_SEARCH_NOTARY_PROFILE:-$(yaml_get notarytool_keychain_profile)}"
 ED_KEY="$(yaml_get sparkle_public_ed_key)"
 DOWNLOAD_BASE="$(yaml_get download_base_url)"
+GH_OWNER="$(yaml_get github_owner)"
+GH_REPO="$(yaml_get github_repo)"
 
 VERSION=""
 BUILD="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
@@ -97,7 +99,11 @@ NOTES_ARG=(--generate-notes)
 [[ -n "$NOTES" ]] && NOTES_ARG=(--notes-file "$NOTES")
 PRERELEASE_ARG=()
 [[ "$PRERELEASE" == 1 ]] && PRERELEASE_ARG=(--prerelease)
-gh release create "v$VERSION" "$DMG" --target "$(git rev-parse HEAD)" --title "$APP_NAME $VERSION" "${PRERELEASE_ARG[@]}" "${NOTES_ARG[@]}"
+REPO_ARG=()
+if [[ -n "$GH_OWNER" && -n "$GH_REPO" ]]; then
+  REPO_ARG=(--repo "$GH_OWNER/$GH_REPO")
+fi
+gh release create "v$VERSION" "$DMG" "${REPO_ARG[@]}" --target "$(git rev-parse HEAD)" --title "$APP_NAME $VERSION" "${PRERELEASE_ARG[@]}" "${NOTES_ARG[@]}"
 
 echo
 echo "==> Done. Commit and push the updated appcast.xml so the feed URL serves it:"
