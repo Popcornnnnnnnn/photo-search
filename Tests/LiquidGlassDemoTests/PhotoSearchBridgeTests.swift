@@ -4,7 +4,7 @@ import GRDB
 import Testing
 @testable import LiquidGlassDemo
 
-@Suite struct PhotoSearchBridgeTests {
+@Suite(.serialized) struct PhotoSearchBridgeTests {
     private struct Fixture {
         let directory: URL
         let dbPath: String
@@ -97,48 +97,72 @@ import Testing
         try? FileManager.default.removeItem(at: fixture.directory)
     }
 
-    private func sendSocketJSON(_ socketPath: String, json: String) throws -> BridgeResponse {
-        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
-        #expect(fd >= 0)
-        defer { Darwin.close(fd) }
+    private func sendSocketJSON(_ socketPath: String, json: String) async throws -> BridgeResponse {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+                    guard fd >= 0 else {
+                        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                    }
+                    defer { Darwin.close(fd) }
 
-        var addr = sockaddr_un()
-        addr.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
-        addr.sun_family = sa_family_t(AF_UNIX)
-        withUnsafeMutableBytes(of: &addr.sun_path) { raw in
-            raw.initializeMemory(as: UInt8.self, repeating: 0)
-            for (idx, byte) in socketPath.utf8.enumerated() {
-                raw[idx] = byte
-            }
-        }
-        let connected = withUnsafePointer(to: &addr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-                Darwin.connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        #expect(connected == 0)
+                    var recvTimeout = timeval(tv_sec: 10, tv_usec: 0)
+                    _ = Darwin.setsockopt(
+                        fd, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout,
+                        socklen_t(MemoryLayout<timeval>.size)
+                    )
 
-        let payload = Array((json + "\n").utf8)
-        let written = payload.withUnsafeBytes { ptr in
-            Darwin.write(fd, ptr.baseAddress, payload.count)
-        }
-        #expect(written == payload.count)
+                    var addr = sockaddr_un()
+                    addr.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+                    addr.sun_family = sa_family_t(AF_UNIX)
+                    withUnsafeMutableBytes(of: &addr.sun_path) { raw in
+                        raw.initializeMemory(as: UInt8.self, repeating: 0)
+                        for (idx, byte) in socketPath.utf8.enumerated() {
+                            raw[idx] = byte
+                        }
+                    }
+                    let connected = withUnsafePointer(to: &addr) { ptr in
+                        ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                            Darwin.connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+                        }
+                    }
+                    guard connected == 0 else {
+                        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .ECONNREFUSED)
+                    }
 
-        var responseData = Data()
-        var chunk = [UInt8](repeating: 0, count: 4096)
-        while true {
-            let count = Darwin.read(fd, &chunk, chunk.count)
-            if count > 0 {
-                if let nl = chunk[..<count].firstIndex(of: 0x0A) {
-                    responseData.append(contentsOf: chunk[..<nl])
-                    break
+                    let payload = Array((json + "\n").utf8)
+                    let written = payload.withUnsafeBytes { ptr in
+                        Darwin.write(fd, ptr.baseAddress, payload.count)
+                    }
+                    guard written == payload.count else {
+                        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                    }
+
+                    var responseData = Data()
+                    var chunk = [UInt8](repeating: 0, count: 4096)
+                    while true {
+                        let count = Darwin.read(fd, &chunk, chunk.count)
+                        if count > 0 {
+                            if let nl = chunk[..<count].firstIndex(of: 0x0A) {
+                                responseData.append(contentsOf: chunk[..<nl])
+                                break
+                            }
+                            responseData.append(contentsOf: chunk[..<count])
+                        } else if count == 0 {
+                            break
+                        } else if errno == EINTR {
+                            continue
+                        } else {
+                            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .ETIMEDOUT)
+                        }
+                    }
+                    continuation.resume(returning: try JSONDecoder().decode(BridgeResponse.self, from: responseData))
+                } catch {
+                    continuation.resume(throwing: error)
                 }
-                responseData.append(contentsOf: chunk[..<count])
-            } else {
-                break
             }
         }
-        return try JSONDecoder().decode(BridgeResponse.self, from: responseData)
     }
 
     @Test func fetchAssetReturnsSingleAvailableItem() throws {
@@ -208,12 +232,12 @@ import Testing
         try server.start()
         #expect(FileManager.default.fileExists(atPath: fixture.socketPath))
 
-        let pong = try sendSocketJSON(fixture.socketPath, json: #"{"op":"ping"}"#)
+        let pong = try await sendSocketJSON(fixture.socketPath, json: #"{"op":"ping"}"#)
         #expect(pong.ok)
         #expect(pong.databaseAvailable == true)
         #expect(pong.stats?.total == 2)
 
-        let search = try sendSocketJSON(
+        let search = try await sendSocketJSON(
             fixture.socketPath,
             json: #"{"op":"search","query":"retriever","mode":"lexical","limit":5}"#
         )
@@ -225,13 +249,13 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: fixture.socketPath))
     }
 
-    @Test func unixSocketServerStreamsResponsesLargerThan8KBBuffer() throws {
+    @Test func unixSocketServerStreamsResponsesLargerThan8KBBuffer() async throws {
         let fixture = try makeFixture()
         defer { cleanUp(fixture) }
 
         let longCaption = String(repeating: "sunset over alpine lake ", count: 600)
         let queue = try DatabaseQueue(path: fixture.dbPath)
-        try queue.write { db in
+        try await queue.write { db in
             try db.execute(
                 sql: "UPDATE search_docs SET short_caption = ?, search_text = ? WHERE asset_id = 'p1'",
                 arguments: [longCaption, "sunset over alpine lake " + longCaption]
@@ -243,7 +267,7 @@ import Testing
         try server.start()
         defer { server.stop() }
 
-        let large = try sendSocketJSON(
+        let large = try await sendSocketJSON(
             fixture.socketPath,
             json: #"{"op":"search","query":"alpine lake","mode":"lexical","limit":5}"#
         )
@@ -289,7 +313,7 @@ import Testing
         #expect(counter.current == 1)
     }
 
-    @Test func unstartedServerStopDoesNotUnlinkActiveSocket() throws {
+    @Test func unstartedServerStopDoesNotUnlinkActiveSocket() async throws {
         let fixture = try makeFixture()
         defer { cleanUp(fixture) }
 
@@ -302,7 +326,7 @@ import Testing
         bystander.stop()
         #expect(FileManager.default.fileExists(atPath: fixture.socketPath))
 
-        let pong = try sendSocketJSON(fixture.socketPath, json: #"{"op":"ping"}"#)
+        let pong = try await sendSocketJSON(fixture.socketPath, json: #"{"op":"ping"}"#)
         #expect(pong.ok)
     }
 }

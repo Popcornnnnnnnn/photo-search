@@ -185,7 +185,7 @@ enum PhotoSearchBridgeHandler {
             let trimmedQuery = (request.query ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let requestedMode = (request.mode ?? "hybrid").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             let resolvedVector: [Float]?
-            if op == "search", !trimmedQuery.isEmpty, requestedMode != "lexical" {
+            if let encoder, op == "search", !trimmedQuery.isEmpty, requestedMode != "lexical" {
                 let loadIfNeeded = request.loadEncoder ?? true
                 resolvedVector = await obtainQueryVector(
                     for: trimmedQuery,
@@ -195,7 +195,7 @@ enum PhotoSearchBridgeHandler {
             } else {
                 resolvedVector = nil
             }
-            let encoderStatus = await encoderSnapshot(encoder)
+            let encoderStatus = await resolveEncoderSnapshot(encoder)
             do {
                 return try await photoSearchBackground {
                     executeSynchronously(
@@ -214,7 +214,7 @@ enum PhotoSearchBridgeHandler {
             }
 
         default:
-            let encoderStatus = await encoderSnapshot(encoder)
+            let encoderStatus = await resolveEncoderSnapshot(encoder)
             return BridgeResponse(
                 ok: false,
                 error: "Unsupported bridge op: \(request.op)",
@@ -421,6 +421,11 @@ enum PhotoSearchBridgeHandler {
         return await Task { @MainActor in
             await encoder.embed(query)
         }.value
+    }
+
+    private static func resolveEncoderSnapshot(_ encoder: PhotoEncoderStore?) async -> BridgeEncoderStatus {
+        guard let encoder else { return .unavailable() }
+        return await encoderSnapshot(encoder)
     }
 
     @MainActor
@@ -760,8 +765,16 @@ final class PhotoSearchBridgeServer: @unchecked Sendable {
                             self.scheduleIdleOffload()
                         }
                     }
-                    Self.writeResponse(response, to: clientFD)
-                    Darwin.close(clientFD)
+                    let replyQueue = self?.clientQueue
+                    let writeAndClose: @Sendable () -> Void = {
+                        Self.writeResponse(response, to: clientFD)
+                        Darwin.close(clientFD)
+                    }
+                    if let replyQueue {
+                        replyQueue.async(execute: writeAndClose)
+                    } else {
+                        writeAndClose()
+                    }
                 }
             }
         }
