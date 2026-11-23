@@ -21,7 +21,7 @@ yaml_get() { sed -n "s/^$1:[[:space:]]*\"\{0,1\}\([^\"#]*[^\"# ]\)\"\{0,1\}.*/\1
 APP_NAME="$(yaml_get app_name)"
 DEV_ID="$(yaml_get developer_id_application)"
 TEAM_ID="$(yaml_get apple_team_id)"
-PROFILE="$(yaml_get notarytool_keychain_profile)"
+PROFILE="${PHOTO_SEARCH_NOTARY_PROFILE:-$(yaml_get notarytool_keychain_profile)}"
 ED_KEY="$(yaml_get sparkle_public_ed_key)"
 DOWNLOAD_BASE="$(yaml_get download_base_url)"
 
