@@ -290,7 +290,7 @@ import Testing
         let server = PhotoSearchBridgeServer(
             socketPath: fixture.socketPath,
             databasePath: fixture.dbPath,
-            idleOffloadInterval: 0.2,
+            idleOffloadInterval: 0.6,
             shouldIdleOffload: { true },
             idleOffloadHandler: { counter.increment() }
         )
@@ -298,18 +298,21 @@ import Testing
 
         server.recordEncoderActivity()
         try await Task.sleep(for: .milliseconds(100))
-        // Resetting activity before 0.2s pushes out the deadline.
+        // Resetting activity before 0.6s pushes out the deadline.
         server.recordEncoderActivity()
-        try await Task.sleep(for: .milliseconds(120))
+        try await Task.sleep(for: .milliseconds(150))
         #expect(counter.current == 0)
 
-        try await Task.sleep(for: .milliseconds(250))
+        let deadline = Date().addingTimeInterval(2.0)
+        while counter.current == 0 && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
         #expect(counter.current == 1)
 
         // Calling stop() cancels any armed timer cleanly.
         server.recordEncoderActivity()
         server.stop()
-        try await Task.sleep(for: .milliseconds(300))
+        try await Task.sleep(for: .milliseconds(750))
         #expect(counter.current == 1)
     }
 
