@@ -47,6 +47,20 @@ enum PhotoSection: String, CaseIterable, Identifiable, Sendable, Codable {
         }
     }
 
+    static func fromBridgeKey(_ raw: String?) -> PhotoSection {
+        guard let raw else { return .all }
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "all", "": return .all
+        case "photo", "photos": return .photo
+        case "video", "videos": return .video
+        case "uiscreenshot", "ui_screenshot", "screenshot", "screenshots": return .uiScreenshot
+        case "chatscreenshot", "chat_screenshot", "chat", "chats": return .chatScreenshot
+        case "document", "documents": return .document
+        case "posterormeme", "poster_or_meme", "poster", "posters", "meme", "memes": return .posterOrMeme
+        default: return .all
+        }
+    }
+
     func countDescription(_ count: Int) -> String {
         let singular: String
         let plural: String
@@ -90,6 +104,26 @@ enum PhotoTimeFilter: Hashable, Sendable {
         case .lastYear: String(localized: "Last year", bundle: .module)
         case .custom(let start, let end):
             start.formatted(date: .abbreviated, time: .omitted) + " – " + end.formatted(date: .abbreviated, time: .omitted)
+        }
+    }
+
+    var bridgeKey: String {
+        switch self {
+        case .all: "all"
+        case .last30Days: "last30Days"
+        case .thisYear: "thisYear"
+        case .lastYear: "lastYear"
+        case .custom: "custom"
+        }
+    }
+
+    static func fromBridgeKey(_ raw: String?) -> PhotoTimeFilter {
+        guard let raw else { return .all }
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "last30days", "last_30_days", "30d": return .last30Days
+        case "thisyear", "this_year": return .thisYear
+        case "lastyear", "last_year": return .lastYear
+        default: return .all
         }
     }
 
@@ -201,7 +235,7 @@ struct IndexedPhoto: Identifiable, Hashable, Sendable {
     }
 }
 
-struct PhotoLibraryStats: Decodable, Sendable {
+struct PhotoLibraryStats: Codable, Sendable, Equatable {
     let total: Int
     let indexed: Int
     let failed: Int

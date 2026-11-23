@@ -37,22 +37,27 @@ enum PhotoOriginal {
     }
 
     @MainActor
+    static func openSynchronously(assetID: String, databasePath: String = PhotoSearchDatabase.path) throws {
+        let identifier = try identifier(for: assetID, databasePath: databasePath)
+        let script = """
+            tell application id "com.apple.Photos"
+                spotlight (media item id \(scriptString(identifier)))
+                activate
+            end tell
+            """
+        guard let appleScript = NSAppleScript(source: script) else { throw Failure.unavailable }
+        var details: NSDictionary?
+        appleScript.executeAndReturnError(&details)
+        if let details {
+            let message = details[NSAppleScript.errorMessage] as? String ?? "Check Photos access and try again."
+            throw Failure.photosError(message)
+        }
+    }
+
+    @MainActor
     static func open(assetID: String, errors: ErrorStore) {
         do {
-            let identifier = try identifier(for: assetID)
-            let script = """
-                tell application id "com.apple.Photos"
-                    spotlight (media item id \(scriptString(identifier)))
-                    activate
-                end tell
-                """
-            guard let appleScript = NSAppleScript(source: script) else { throw Failure.unavailable }
-            var details: NSDictionary?
-            appleScript.executeAndReturnError(&details)
-            if let details {
-                let message = details[NSAppleScript.errorMessage] as? String ?? "Check Photos access and try again."
-                throw Failure.photosError(message)
-            }
+            try openSynchronously(assetID: assetID)
         } catch {
             errors.present(title: "Unable to Open in Photos", message: error.localizedDescription)
         }
