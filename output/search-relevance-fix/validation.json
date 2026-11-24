@@ -1,0 +1,28 @@
+{
+  "app_version": "0.1.0",
+  "app_build": 24,
+  "installed_path": "/Users/forge/Workspace/photo-search/dist/Photo Search.app",
+  "binary_sha256": "d5d1b5c67f8c79c1f40c7aab61c40030aed4e182a3612dcd8a7f25db728d5cb0",
+  "password_results_before": 100,
+  "password_results_after": 59,
+  "password_cycling_video_results_after": 0,
+  "password_text_hits_preserved": 59,
+  "swift_regression_tests_passed": 12,
+  "backend_tests_passed": 17,
+  "native_live_index_queries": {
+    "从副驾驶看别人开宝马走在林荫路上的照片": 3,
+    "密码": 59,
+    "湖边晚上远处建筑亮灯还映在水里的照片": 19,
+    "月球表面弹钢琴的章鱼": 0,
+    "password": 15,
+    "夜间骑行": 100
+  },
+  "positive_cases": 28,
+  "baseline_positive_top3": 26,
+  "updated_positive_top3": 26,
+  "negative_cases": 8,
+  "baseline_negative_empty": 2,
+  "updated_negative_empty": 7,
+  "visual_acceptance": "Actual app window shows 59 results for 密码 with cycling videos removed.",
+  "github_push": "Not pushed: configured origin is public; workspace also contains pre-existing uncommitted changes."
+}

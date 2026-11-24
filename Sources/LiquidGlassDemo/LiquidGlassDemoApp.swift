@@ -1,5 +1,5 @@
-import SwiftUI
 import AppKit
+import SwiftUI
 
 /// Entry point. Runs the normal windowed app, unless invoked with
 /// `--snapshot <path>`, in which case it renders `ContentView` to a PNG in-process
@@ -9,6 +9,9 @@ import AppKit
 struct Main {
     static func main() {
         let args = CommandLine.arguments
+        if args.contains("--search-json") {
+            exit(PhotoSearchBridgeHandler.runCLI(args: args))
+        }
         if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
             let size = parseSize(args) ?? CGSize(width: 800, height: 600)
             MainActor.assumeIsolated {
@@ -55,17 +58,18 @@ struct LiquidGlassDemoApp: App {
         // no File ▸ New Window duplicates and `openWindow(id:)` from the tray
         // always brings the same window to front.
         Window("Photo Search", id: "main") {
-            ContentView()
+            ContentView(encoder: appDelegate.encoder)
                 // Room for the sidebars + a padded main column on all sides.
                 .frame(minWidth: 820, minHeight: 560)
-                // Empty title so macOS never flashes the executable name in the
-                // header on hover / when the window becomes key.
-                .navigationTitle("")
+                // Keep an accessible window name; the native toolbar hides its
+                // visual title and supplies the active page's controls instead.
+                .navigationTitle("Photo Search")
                 .environment(theme)
         }
-        // Transparent, full-size titlebar so the SwiftUI header strip becomes the
-        // header background (the default titlebar material otherwise shows through).
-        .windowStyle(.hiddenTitleBar)
+        .handlesExternalEvents(matching: ["*"])
+        // AppKit lays out the traffic lights and toolbar as one native row.
+        .windowStyle(.titleBar)
+        .windowToolbarStyle(.unified(showsTitle: false))
         .windowResizability(.contentMinSize)
         .defaultSize(width: 1180, height: 760)
         .defaultPosition(.center)
@@ -132,16 +136,50 @@ private struct TrayMenu: View {
 /// bar, and a window that activates/comes-to-front on click. Without `.regular`,
 /// a non-bundled executable defaults to an accessory policy (no Dock, can't
 /// become the active app).
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    let encoder = PhotoEncoderStore()
+    private var bridge: PhotoSearchBridgeServer?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppLog.app.notice("Launched \(AppInfo.name, privacy: .public) \(AppInfo.versionString, privacy: .public)")
+        let background = CommandLine.arguments.contains("--background")
+            || ProcessInfo.processInfo.environment["PHOTO_SEARCH_BACKGROUND"] == "1"
         NSApp.setActivationPolicy(.regular)
-        MainActor.assumeIsolated {
-            if let icon = AppIcon.make() {
-                NSApp.applicationIconImage = icon
-            }
+        if let icon = AppIcon.make() {
+            NSApp.applicationIconImage = icon
         }
-        NSApp.activate(ignoringOtherApps: true)
+        let server = PhotoSearchBridgeServer(
+            encoder: encoder,
+            idleOffloadInterval: 600,
+            shouldIdleOffload: {
+                await MainActor.run {
+                    !NSApp.windows.contains { $0.isVisible && $0.title == "Photo Search" }
+                }
+            }
+        )
+        do {
+            try server.start()
+            bridge = server
+        } catch {
+            AppLog.app.error("Failed to start search bridge socket: \(error.localizedDescription, privacy: .public)")
+        }
+        if background {
+            DispatchQueue.main.async {
+                for window in NSApp.windows {
+                    window.orderOut(nil)
+                }
+                NSApp.hide(nil)
+            }
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        bridge?.stop()
+        bridge = nil
+        encoder.shutdown()
     }
 
     // Keep the app running after its last window closes (standard macOS behavior):
@@ -183,6 +221,20 @@ enum Snapshot {
         let store = ThemeStore()
         let nsAppearance = NSAppearance(named: dark ? .darkAqua : .aqua)
 
+        if view == "connection-model" || view == "connection-index" {
+            let issue: PhotoConnectionIssue = view == "connection-model" ? .model("Qwen 4090") : .index
+            let notice = PhotoConnectionNotice(issue: issue, isChecking: false, onRetry: {}, onSettings: {})
+                .padding(24)
+                .frame(maxWidth: 640)
+                .frame(maxWidth: .infinity, alignment: .bottom)
+                .frame(width: size.width)
+                .background(store.background)
+                .environment(store)
+                .environment(\.colorScheme, scheme)
+            PNGRenderer.write(notice, to: path, scale: 2, label: "connection notice", appearance: nsAppearance)
+            return
+        }
+
         if view == "about" {
             // The About panel at its intrinsic size (no window to match).
             let about = AboutView()
@@ -194,7 +246,28 @@ enum Snapshot {
             return
         }
 
-        let content = ContentView(windowMaterial: nil, showsOnboarding: false)
+        if view == "sidebar" {
+            // The library sidebar alone, at its default width, so the footer
+            // status can be checked without opening a window.
+            let sidebar = PhotoSidebar(store: PhotoSearchStore(),
+                                       activity: PhotoIndexActivityStore().activity,
+                                       ui: UIState(),
+                                       onRandomBrowse: {}, onReview: {})
+                .frame(width: Layout.leftSidebarWidth, height: size.height)
+                .background(store.background)
+                .environment(store)
+                .environment(\.colorScheme, scheme)
+            PNGRenderer.write(sidebar, to: path, scale: 2, label: "sidebar", appearance: nsAppearance)
+            return
+        }
+
+        let content = ContentView(
+            windowMaterial: nil,
+            showsOnboarding: false,
+            showsPointerEffects: false,
+            startsInLibrary: view == "library" || view == "indexing",
+            opensSettingsSection: view == "indexing" ? .indexing : nil
+        )
             .frame(width: size.width, height: size.height)
             .background(store.background)
             .environment(store)

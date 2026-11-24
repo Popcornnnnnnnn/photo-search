@@ -14,5 +14,5 @@ enum AppInfo {
         return build.map { "\(version) (\($0))" } ?? version
     }
 
-    static let repositoryURL = URL(string: "https://github.com/SohrabZ/swiftui-macos-app")!
+    static let repositoryURL = URL(string: "https://github.com/Popcornnnnnnnn/photo-search")!
 }

@@ -1,16 +1,9 @@
 import SwiftUI
 import AppKit
 
-/// The app icon in the macOS 26 "Liquid Glass" style: a lavender squircle plate
-/// holding a large frosted-glass orb with the water drop suspended inside it —
-/// specular light at the orb's top, refraction cooling its bottom, and a soft
-/// cast shadow grounding it on the plate.
-///
-/// Rendered in-process with `ImageRenderer` (no asset catalog), and used as the
-/// Dock icon (a SwiftPM executable has no bundled `.icns`), the About and
-/// onboarding panels, and the hero card's logo. Everything is drawn with
-/// shapes/gradients — `DropShape` is a path (not the SF Symbol) so it can be
-/// filled, stroked, and masked per layer.
+/// The selected vivid photo-stack artwork, shared by the Dock, menu bar,
+/// About, and onboarding views. The bundled image includes transparent margins;
+/// the drawn glass icon remains a fallback if the resource is unavailable.
 struct AppIconView: View {
     var body: some View {
         Group {
@@ -19,7 +12,7 @@ struct AppIconView: View {
                     .resizable()
                     .interpolation(.high)
                     .scaledToFit()
-                    .scaleEffect(0.86)
+                    .scaleEffect(0.94)
             } else {
                 ZStack {
                     basePlate
@@ -184,7 +177,7 @@ struct DropShape: Shape {
 enum AppIcon {
     static let asset: NSImage? = {
         guard let url = Bundle.module.url(
-            forResource: "PhotoSearchIcon-v2",
+            forResource: "PhotoSearchIcon-v3",
             withExtension: "png"
         ) else { return nil }
         return NSImage(contentsOf: url)

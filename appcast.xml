@@ -1,16 +1,15 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!--
-  Sparkle appcast (update feed) for LiquidGlassDemo.
-
-  This file starts empty. `scripts/release.sh` prepends a new <item> for each
-  release: version, notes, minimum OS, and an <enclosure> pointing at the signed
-  DMG on GitHub Releases with its Sparkle EdDSA signature. Do not hand-edit the
-  signatures — let the release script generate them.
--->
-<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
-  <channel>
-    <title>LiquidGlassDemo Changelog</title>
-    <description>Most recent updates to LiquidGlassDemo.</description>
-    <language>en</language>
-  </channel>
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Photo Search</title>
+        <item>
+            <title>0.1.0-alpha.1</title>
+            <pubDate>Tue, 24 Nov 2026 03:17:48 +0800</pubDate>
+            <sparkle:version>80</sparkle:version>
+            <sparkle:shortVersionString>0.1.0-alpha.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Popcornnnnnnnn/photo-search/releases/download/v0.1.0-alpha.1/PhotoSearch-v0.1.0-alpha.1.dmg" length="8676424" type="application/octet-stream" sparkle:edSignature="0XVgdGxbNW9f2wHeLpeSsPQySKaGpdBvwB+YoFaZFj2mh8/DIHdDUfC0dH/v9awp4z5A8/oHSBkL3dPwEZBoAw=="/>
+        </item>
+    </channel>
 </rss>

@@ -53,7 +53,7 @@ final class UIState {
     var leftSidebarVisible = true {
         didSet { UserDefaults.standard.set(leftSidebarVisible, forKey: Prefs.leftSidebar) }
     }
-    var rightSidebarVisible = true {
+    var rightSidebarVisible = false {
         didSet { UserDefaults.standard.set(rightSidebarVisible, forKey: Prefs.rightSidebar) }
     }
     var leftSidebarWidth: CGFloat = Layout.leftSidebarWidth {

@@ -1,0 +1,315 @@
+--- a/Sources/LiquidGlassDemo/PhotoSearchEngine.swift
++++ b/Sources/LiquidGlassDemo/PhotoSearchEngine.swift
+@@ -1,12 +1,11 @@
+ import Foundation
+ import GRDB
+ 
+-/// Native port of the backend's lexical retrieval (`backend/photo_search/search.py`).
++/// Native port of the backend's hybrid retrieval (`backend/photo_search/search.py`).
+ ///
+ /// Scoring order, thresholds, and fallback behaviour are kept deliberately in step
+ /// with the Python implementation so the app ranks identically without a loopback
+-/// service. Visual (embedding) recall is not wired up yet: queries fall back to
+-/// text matches and say so in the notice.
++/// service. Queries without a vector fall back to text matches and say so in the notice.
+ enum PhotoSearchEngine {
+     static let minTextCoverage = 0.50
+     static let defaultLimit = 100
+@@ -14,6 +13,12 @@
+     // Thresholds, fusion order, and the embedding contract are kept in step with
+     // backend/photo_search/search.py and backend/photo_search/embeddings.py.
+     private static let minVisualSimilarity = 0.40
++    private static let minUncorroboratedVisualSimilarity = 0.45
++    private static let minVisualTextCoverage = 0.25
++    // Text-encoded video summaries have a higher unrelated-query baseline than
++    // image vectors. Keep their recall gate separate so they cannot crowd out
++    // relevant photos merely by clearing the image threshold.
++    private static let minVideoSimilarity = 0.55
+     private static let lexicalConfidenceRatio = 1.5
+     private static let fusionCandidates = 100
+     private static let embeddingNamespace = "image-retrieval-v1"
+@@ -51,6 +56,9 @@
+             let strongTextIDs = Set(
+                 lexical.filter { $0.textCoverage >= minTextCoverage }.map(\.document.assetID)
+             )
++            let supportedTextIDs = Set(
++                lexical.filter { $0.textCoverage >= minVisualTextCoverage }.map(\.document.assetID)
++            )
+ 
+             var ranked: [VisualMatch] = []
+             var visualSearchRan = false
+@@ -60,8 +68,13 @@
+                 if visualSearchRan {
+                     let vector = normalizedVector(queryVector.map(Double.init))
+                     ranked = vectors.compactMap { candidate in
++                        // Partial text evidence can support an image synonym match.
++                        // Without it, require a stronger signal than the base gate.
++                        let minimumSimilarity = supportedTextIDs.contains(candidate.assetID)
++                            ? candidate.minimumSimilarity
++                            : max(candidate.minimumSimilarity, minUncorroboratedVisualSimilarity)
+                         guard let similarity = cosine(vector, candidate.vector),
+-                              similarity >= minVisualSimilarity else { return nil }
++                              similarity >= minimumSimilarity else { return nil }
+                         return VisualMatch(assetID: candidate.assetID, similarity: similarity)
+                     }
+                     ranked.sort { lhs, rhs in
+@@ -242,6 +255,7 @@
+     private struct Embedding {
+         let assetID: String
+         let vector: [Double]
++        let minimumSimilarity: Double
+     }
+ 
+     private struct Fused {
+@@ -281,15 +295,18 @@
+             let revision: String = row["model_revision"]
+             let prompt: String = row["prompt_version"]
+             let dimensions: Int = row["dimensions"]
++            let namespace: String = row["namespace"]
+             let blob: Data = row["vector"]
+             guard model == embeddingModel, revision == embeddingRevision,
+-                  ((row["namespace"] as String == embeddingNamespace && prompt == embeddingPrompt)
+-                    || (row["namespace"] as String == videoEmbeddingNamespace && prompt == videoEmbeddingPrompt)),
++                  ((namespace == embeddingNamespace && prompt == embeddingPrompt)
++                    || (namespace == videoEmbeddingNamespace && prompt == videoEmbeddingPrompt)),
+                   dimensions == embeddingDimensions,
+                   let text = searchText[assetID],
+                   identifiers.allSatisfy({ text.contains($0) }),
+                   let vector = decodeVector(blob) else { return nil }
+-            return Embedding(assetID: assetID, vector: vector)
++            return Embedding(assetID: assetID, vector: vector,
++                             minimumSimilarity: namespace == videoEmbeddingNamespace
++                                ? minVideoSimilarity : minVisualSimilarity)
+         }
+     }
+ 
+--- a/Tests/LiquidGlassDemoTests/PhotoSearchEngineTests.swift
++++ b/Tests/LiquidGlassDemoTests/PhotoSearchEngineTests.swift
+@@ -123,7 +123,7 @@
+     }
+ 
+     /// Stores one active vector under the pinned contract the engine accepts.
+-    private func addEmbedding(_ path: String, id: String, vector: [Float]) throws {
++    private func addEmbedding(_ path: String, id: String, vector: [Float], video: Bool = false) throws {
+         let queue = try DatabaseQueue(path: path)
+         try queue.write { db in
+             try db.execute(
+@@ -131,11 +131,14 @@
+                     INSERT INTO embeddings(
+                         asset_id, namespace, model, model_revision, prompt_version,
+                         input_sha256, dimensions, vector, created_at, is_active
+-                    ) VALUES (?, 'image-retrieval-v1', 'Qwen/Qwen3-VL-Embedding-2B',
++                    ) VALUES (?, ?, 'Qwen/Qwen3-VL-Embedding-2B',
+                               '9f2f7e710d6d81056aa5c0a4f04764fec6bb7bda',
+-                              'official-wrapper-393e2978:document-default-v1', ?, 2048, ?, ?, 1)
++                              ?, ?, 2048, ?, ?, 1)
+                     """,
+-                arguments: [id, id, vector.withUnsafeBufferPointer { Data(buffer: $0) },
++                arguments: [id, video ? "video-retrieval-v1" : "image-retrieval-v1",
++                            video ? "official-wrapper-393e2978:video-summary-v1"
++                                : "official-wrapper-393e2978:document-default-v1",
++                            id, vector.withUnsafeBufferPointer { Data(buffer: $0) },
+                             "2026-01-01T00:00:00Z"]
+             )
+         }
+@@ -147,6 +150,60 @@
+         var vector = [Float](repeating: 0, count: 2048)
+         vector[axis] = 1
+         return vector
++    }
++
++    @Test func passwordSearchRejectsWeakVideoRecallButKeepsTextAndSemanticMatches() throws {
++        let fixture = try makeFixture()
++        defer { cleanUp(fixture) }
++        func vector(_ similarity: Float) -> [Float] {
++            var result = axisVector(0)
++            result[0] = similarity
++            result[1] = sqrt(1 - similarity * similarity)
++            return result
++        }
++        try addPhoto(fixture.path, id: "password-photo", caption: "密码输入框")
++        try addEmbedding(fixture.path, id: "password-photo", vector: vector(0.47))
++        // Reproduce the measured 0.46 false positive from a cycling video.
++        try addPhoto(fixture.path, id: "cycling", caption: "夜间公路自行车骑行", assetType: "video")
++        try addEmbedding(fixture.path, id: "cycling", vector: vector(0.46), video: true)
++        try addPhoto(fixture.path, id: "weak-video", caption: "户外运动", assetType: "video")
++        try addEmbedding(fixture.path, id: "weak-video", vector: vector(0.54), video: true)
++        // Preserve video recall without shared words above the separate gate.
++        try addPhoto(fixture.path, id: "semantic-video", caption: "登录认证界面", assetType: "video")
++        try addEmbedding(fixture.path, id: "semantic-video", vector: vector(0.56), video: true)
++        // An exact transcript/OCR hit must survive even with a weak vector.
++        try addPhoto(fixture.path, id: "spoken-password", caption: "讲解密码设置步骤", assetType: "video")
++        try addEmbedding(fixture.path, id: "spoken-password", vector: vector(0.20), video: true)
++        // Image-vector recall has a lower gate than video summaries.
++        try addPhoto(fixture.path, id: "semantic-photo", caption: "账号安全窗口")
++        try addEmbedding(fixture.path, id: "semantic-photo", vector: vector(0.47))
++        try addPhoto(fixture.path, id: "weak-photo", caption: "工伤保险咨询聊天")
++        try addEmbedding(fixture.path, id: "weak-photo", vector: vector(0.41))
++
++        let output = try PhotoSearchEngine.search(query: "密码", section: .all,
++                                                  databasePath: fixture.path, queryVector: axisVector(0))
++        #expect(Set(output.photos.map(\.id)) ==
++                Set(["password-photo", "semantic-video", "spoken-password", "semantic-photo"]))
++        let videos = try PhotoSearchEngine.search(query: "密码", section: .video,
++                                                  databasePath: fixture.path, queryVector: axisVector(0))
++        #expect(Set(videos.photos.map(\.id)) == Set(["semantic-video", "spoken-password"]))
++    }
++
++    @Test func partialTextEvidencePreservesLowerConfidenceImageRecall() throws {
++        let fixture = try makeFixture()
++        defer { cleanUp(fixture) }
++        let query = "从副驾驶看别人开宝马走在林荫路上"
++        let caption = "宝马林荫路"
++        let coverage = PhotoSearchEngine.textCoverage(query: query, text: caption)
++        #expect(coverage >= 0.25 && coverage < 0.50)
++        try addPhoto(fixture.path, id: "car", caption: caption)
++        var vector = axisVector(0)
++        vector[0] = 0.42
++        vector[1] = sqrt(1 - 0.42 * 0.42)
++        try addEmbedding(fixture.path, id: "car", vector: vector)
++        let output = try PhotoSearchEngine.search(query: query, section: .all,
++                                                  databasePath: fixture.path, queryVector: axisVector(0))
++        #expect(output.photos.map(\.id) == ["car"])
+     }
+ 
+     @Test func wholeVideoVectorAndTranscriptReturnOneVideoWithDuration() throws {
+--- a/backend/photo_search/search.py
++++ b/backend/photo_search/search.py
+@@ -12,6 +12,12 @@
+ # Calibrated on existing positives plus a separate negative-query set.
+ # Cosine is a retrieval signal, not a probability of a correct match.
+ MIN_VISUAL_SIMILARITY = 0.40
++MIN_UNCORROBORATED_VISUAL_SIMILARITY = 0.45
++MIN_VISUAL_TEXT_COVERAGE = 0.25
++# Text-encoded video summaries have a higher unrelated-query baseline than
++# image vectors. Calibrated separately against password/login false positives
++# and relevant cycling videos; lexical matches remain eligible independently.
++MIN_VIDEO_SIMILARITY = 0.55
+ MIN_TEXT_COVERAGE = 0.50
+ 
+ 
+@@ -107,6 +113,7 @@
+     lexical.sort(key=lambda item: (item.get("captured_at") or "", item["asset_id"]), reverse=True)
+     lexical.sort(key=lambda item: -item["score"])
+     strong_text_ids = {item["asset_id"] for item in lexical if item["text_coverage"] >= MIN_TEXT_COVERAGE}
++    supported_text_ids = {item["asset_id"] for item in lexical if item["text_coverage"] >= MIN_VISUAL_TEXT_COVERAGE}
+     results = [item for item in lexical if item["asset_id"] in strong_text_ids]
+     plan["retrieval"] = "lexical"
+     plan["embedding_count"] = 0
+@@ -141,7 +148,12 @@
+                         raise ValueError("Embedding has zero length")
+                     matrix /= norms[:, None]
+                     similarities = matrix @ np.asarray(query_vector)
+-                    for index in np.flatnonzero(similarities >= MIN_VISUAL_SIMILARITY):
++                    thresholds = np.asarray([
++                        MIN_VIDEO_SIMILARITY if row["namespace"] == VIDEO_EMBEDDING_NAMESPACE
++                        else MIN_VISUAL_SIMILARITY if row["asset_id"] in supported_text_ids
++                        else MIN_UNCORROBORATED_VISUAL_SIMILARITY for row in candidates
++                    ])
++                    for index in np.flatnonzero(similarities >= thresholds):
+                         similarity = float(similarities[index])
+                         ranked.append({"asset_id": candidates[index]["asset_id"], "score": similarity,
+                                        "visual_similarity": similarity})
+--- a/backend/tests/test_search.py
++++ b/backend/tests/test_search.py
+@@ -8,9 +8,10 @@
+ from photo_search.embeddings import (
+     DIMENSIONS, EMBEDDING_MODEL, EMBEDDING_NAMESPACE, EMBEDDING_PROMPT,
+     EMBEDDING_REVISION, index_embeddings,
++    VIDEO_EMBEDDING_NAMESPACE, VIDEO_EMBEDDING_PROMPT,
+     normalized,
+ )
+-from photo_search.search import search
++from photo_search.search import search, text_coverage
+ from photo_search.worker import sync_due
+ 
+ 
+@@ -50,6 +51,45 @@
+             result = search(self.db, "桥下休息", expand=False)
+         self.assertEqual(result["plan"]["retrieval"], "hybrid")
+         self.assertEqual(result["results"][0]["asset_id"], "scene")
++
++    def test_password_rejects_weak_video_recall_without_losing_text_or_semantics(self):
++        def add(asset_id, caption, similarity, video=False):
++            self.add_photo(asset_id, caption, "video" if video else "photo")
++            vector = [similarity, (1 - similarity ** 2) ** 0.5] + [0.0] * (DIMENSIONS - 2)
++            self.db.upsert_embedding(
++                asset_id=asset_id,
++                namespace=VIDEO_EMBEDDING_NAMESPACE if video else EMBEDDING_NAMESPACE,
++                model=EMBEDDING_MODEL, model_revision=EMBEDDING_REVISION,
++                prompt_version=VIDEO_EMBEDDING_PROMPT if video else EMBEDDING_PROMPT,
++                vector=vector,
++            )
++
++        add("password-photo", "密码输入框", 0.47)
++        add("cycling", "夜间公路自行车骑行", 0.46, video=True)
++        add("weak-video", "户外运动", 0.54, video=True)
++        add("semantic-video", "登录认证界面", 0.56, video=True)
++        add("spoken-password", "讲解密码设置步骤", 0.20, video=True)
++        add("semantic-photo", "账号安全窗口", 0.47)
++        add("weak-photo", "工伤保险咨询聊天", 0.41)
++        with patch("photo_search.search.embed_query", return_value=[1.0] + [0.0] * (DIMENSIONS - 1)):
++            result = search(self.db, "密码", limit=100)
++            videos = search(self.db, "密码", asset_type="video")
++        self.assertEqual({r["asset_id"] for r in result["results"]},
++                         {"password-photo", "semantic-video", "spoken-password", "semantic-photo"})
++        self.assertEqual({r["asset_id"] for r in videos["results"]},
++                         {"semantic-video", "spoken-password"})
++
++    def test_partial_text_evidence_preserves_lower_confidence_image_recall(self):
++        query = "从副驾驶看别人开宝马走在林荫路上"
++        caption = "宝马林荫路"
++        coverage = text_coverage(query, caption)
++        self.assertGreaterEqual(coverage, 0.25)
++        self.assertLess(coverage, 0.50)
++        self.add_photo("car", caption, axis=0)
++        vector = [0.42, (1 - 0.42 ** 2) ** 0.5] + [0.0] * (DIMENSIONS - 2)
++        with patch("photo_search.search.embed_query", return_value=vector):
++            result = search(self.db, query)
++        self.assertEqual([r["asset_id"] for r in result["results"]], ["car"])
+ 
+     def test_category_filter_precedes_ranking_and_limit(self):
+         self.add_photo("scene", "headphones", "photo", axis=0)
+@@ -110,7 +150,7 @@
+ 
+     def test_borderline_visual_match_is_labelled_possible(self):
+         self.add_photo("scene", "sunrise", axis=0)
+-        vector = [0.45, (1 - 0.45 ** 2) ** 0.5] + [0.0] * (DIMENSIONS - 2)
++        vector = [0.47, (1 - 0.47 ** 2) ** 0.5] + [0.0] * (DIMENSIONS - 2)
+         with patch("photo_search.search.embed_query", return_value=vector):
+             result = search(self.db, "morning light")
+         self.assertEqual(result["plan"]["match_status"], "possible")
+@@ -131,7 +171,7 @@
+         expected = []
+         for row in self.db.active_embeddings(EMBEDDING_NAMESPACE):
+             score = sum(a * b for a, b in zip(query_vector, normalized(row["vector"])))
+-            if score >= 0.4:
++            if score >= 0.45:
+                 expected.append((row["asset_id"], score))
+         expected.sort(key=lambda item: (-item[1], item[0]))
+         with patch("photo_search.search.embed_query", return_value=query_vector):
+--- a/backend/README.md
++++ b/backend/README.md
+@@ -105,8 +105,7 @@
+ 
+ The CLI runs this Python retrieval function directly. The native app ports its
+ lexical path to Swift (`PhotoSearchEngine.swift`) and reads the same SQLite index
+-directly, so no loopback service is involved; it ranks text matches only today
+-and says so in the UI. Search combines Chinese/English text matches with
++directly, so no loopback service is involved. Search combines Chinese/English text matches with
+ image/text cosine similarity using reciprocal rank fusion, while preserving a
+ strongly leading text match. Category filters apply before ranking. Query
+ expansion through the annotation model is opt-in (`--expand`).
+@@ -169,7 +168,11 @@
+ and does not replace the original benchmark report.
+ 
+ Low-relevance candidates are filtered before results are returned. Visual-only
+-candidates require cosine similarity of at least 0.40; text-only candidates need
++candidates require cosine similarity of at least 0.45 for image vectors without
++text support. Images covering at least 25% of the meaningful query characters
++retain the 0.40 gate so partially described scenes remain searchable.
++Text-encoded video descriptions require 0.55 because their unrelated-query
++baseline is higher. Text-only candidates need
+ at least 50% coverage of meaningful query characters. Exact-looking identifiers
+ such as `ECONNREFUSED` and `B0190` retain text matching, and structured identifiers
+ such as `ZXQ_TEST_ERROR` must occur literally. Similarity is not a probability.

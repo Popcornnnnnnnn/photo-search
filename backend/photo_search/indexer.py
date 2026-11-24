@@ -15,6 +15,7 @@ from .db import Database
 from .native import run_ocr
 from .qwen import QwenClient, ModelProviderError
 from .providers import ModelProvider, load_provider
+from .video import index_video, VIDEO_PROMPT_VERSION, VIDEO_PREPROCESS_VERSION
 
 
 def pending_annotation_assets(
@@ -31,7 +32,7 @@ def pending_annotation_assets(
             skip_stage="index",
             limit=limit,
         )
-    return db.assets_missing_artifact(
+    assets = db.assets_missing_artifact(
         kind="annotation",
         producer=provider.producer,
         model=provider.model,
@@ -40,8 +41,12 @@ def pending_annotation_assets(
         preprocess_version=PREPROCESS_VERSION,
         source_kinds=source_kinds,
         skip_stage="index",
-        limit=limit,
+        limit=None,
     )
+    assets = [asset for asset in assets if json.loads(asset["metadata_json"]).get("media_type") != "video"
+              or not db.has_artifact(asset["id"], "annotation", provider.producer, provider.model,
+                                     VIDEO_PROMPT_VERSION, "1.0", VIDEO_PREPROCESS_VERSION, asset["sha256"])]
+    return assets if limit is None else assets[:limit]
 
 
 def is_transient_error(error: Exception) -> bool:
@@ -93,6 +98,14 @@ def index_assets(
             stats["terminal_skipped"] += 1
             continue
         try:
+            if json.loads(asset["metadata_json"]).get("media_type") == "video":
+                if db.has_artifact(asset_id, "annotation", provider.producer, provider.model,
+                                   VIDEO_PROMPT_VERSION, "1.0", VIDEO_PREPROCESS_VERSION, asset["sha256"]):
+                    stats["skipped"] += 1
+                    continue
+                index_video(db, asset, client, provider, progress)
+                stats["annotated"] += 1
+                continue
             if not db.has_artifact(
                 asset_id, "ocr", OCR_PRODUCER, "", OCR_VERSION, "1.0",
                 PREPROCESS_VERSION, asset["sha256"],

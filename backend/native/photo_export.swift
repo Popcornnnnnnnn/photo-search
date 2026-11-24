@@ -1,3 +1,4 @@
+import AVFoundation
 import AppKit
 import CryptoKit
 import Foundation
@@ -13,6 +14,10 @@ struct ExportRecord: Codable {
     let height: Int
     let favorite: Bool
     let mediaSubtypes: UInt
+    let modifiedAt: String?
+    let thumbnailPath: String?
+    let mediaType: String?
+    let duration: Double?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -24,6 +29,10 @@ struct ExportRecord: Codable {
         case height
         case favorite
         case mediaSubtypes = "media_subtypes"
+        case modifiedAt = "modified_at"
+        case thumbnailPath = "thumbnail_path"
+        case mediaType = "media_type"
+        case duration
     }
 }
 
@@ -83,6 +92,7 @@ func requestPreview(asset: PHAsset, manager: PHImageManager) throws -> NSImage {
     options.resizeMode = .exact
     options.isNetworkAccessAllowed = true
     options.isSynchronous = true
+    options.version = .current
     var result: NSImage?
     manager.requestImage(
         for: asset,
@@ -98,6 +108,30 @@ func requestPreview(asset: PHAsset, manager: PHImageManager) throws -> NSImage {
     return result
 }
 
+func exportVideo(asset: PHAsset, manager: PHImageManager, destination: URL) async throws {
+    let options = PHVideoRequestOptions()
+    options.version = .current
+    options.deliveryMode = .highQualityFormat
+    options.isNetworkAccessAllowed = true
+    let session: AVAssetExportSession? = await withCheckedContinuation { continuation in
+        manager.requestExportSession(forVideo: asset, options: options,
+                                     exportPreset: AVAssetExportPresetPassthrough) { session, _ in
+            continuation.resume(returning: session)
+        }
+    }
+    guard let session, session.supportedFileTypes.contains(.mov) else {
+        throw ExportError.imageUnavailable(asset.localIdentifier)
+    }
+    let temporary = destination.deletingPathExtension().appendingPathExtension("tmp.mov")
+    defer { try? FileManager.default.removeItem(at: temporary) }
+    try? FileManager.default.removeItem(at: temporary)
+    try await session.export(to: temporary, as: .mov)
+    if FileManager.default.fileExists(atPath: destination.path) {
+        try FileManager.default.removeItem(at: destination)
+    }
+    try FileManager.default.moveItem(at: temporary, to: destination)
+}
+
 @main
 struct PhotoExporter {
     static func main() async {
@@ -110,15 +144,57 @@ struct PhotoExporter {
             let output = URL(fileURLWithPath: outputValue, isDirectory: true)
             try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
 
-            let status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+            let existingStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+            let noPrompt = CommandLine.arguments.contains("--no-prompt")
+            let authorize = CommandLine.arguments.contains("--authorize")
+            let status = authorize || (existingStatus == .notDetermined && !noPrompt)
+                ? await PHPhotoLibrary.requestAuthorization(for: .readWrite) : existingStatus
             guard status == .authorized || status == .limited else {
                 throw ExportError.unauthorized(status)
+            }
+
+            if authorize {
+                let payload = ["authorized": true, "limited": status == .limited]
+                let data = try JSONSerialization.data(withJSONObject: payload)
+                try data.write(to: output.appendingPathComponent("result.json"), options: .atomic)
+                return
+            }
+
+            // Full-library scans only keep a preview. Export a video on demand
+            // into the caller's temporary directory when it needs indexing.
+            if let identifier = argument("--video-id") {
+                let matches = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
+                guard let asset = matches.firstObject, asset.mediaType == .video else {
+                    throw ExportError.imageUnavailable(identifier)
+                }
+                let iso = ISO8601DateFormatter()
+                iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                let modifiedAt = asset.modificationDate.map { iso.string(from: $0) } ?? ""
+                guard let expected = argument("--expected-modified-at"), expected == modifiedAt else {
+                    throw ExportError.imageUnavailable(identifier)
+                }
+                let destination = output.appendingPathComponent("video.mov")
+                try await exportVideo(asset: asset, manager: PHImageManager.default(), destination: destination)
+                let current = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil).firstObject
+                guard let current,
+                      (current.modificationDate.map { iso.string(from: $0) } ?? "") == expected else {
+                    try? FileManager.default.removeItem(at: destination)
+                    throw ExportError.imageUnavailable(identifier)
+                }
+                let data = try JSONSerialization.data(withJSONObject: ["video": destination.path])
+                try data.write(to: output.appendingPathComponent("result.json"), options: .atomic)
+                return
             }
 
             let options = PHFetchOptions()
             options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
             if strategy == "recent" { options.fetchLimit = limit }
-            let assets = PHAsset.fetchAssets(with: .image, options: options)
+            options.predicate = NSPredicate(format: "mediaType == %d OR mediaType == %d",
+                                            PHAssetMediaType.image.rawValue, PHAssetMediaType.video.rawValue)
+            if argument("--media-type") == "video" {
+                options.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.video.rawValue)
+            }
+            let assets = PHAsset.fetchAssets(with: options)
             var selected: [PHAsset] = []
             var selectedIDs = Set<String>()
 
@@ -164,46 +240,101 @@ struct PhotoExporter {
             encoder.outputFormatting = [.sortedKeys]
             encoder.dateEncodingStrategy = .iso8601
             let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let manifest = output.appendingPathComponent("manifest.jsonl")
+            var previous: [String: ExportRecord] = [:]
+            if let old = try? String(contentsOf: manifest, encoding: .utf8) {
+                for line in old.split(separator: "\n") {
+                    if let record = try? JSONDecoder().decode(ExportRecord.self, from: Data(line.utf8)) {
+                        previous[record.id] = record
+                    }
+                }
+            }
             var lines: [String] = []
             var failures = 0
+            var failedIDs: [String] = []
+            var regenerated = 0
+            let outputDir = output.resolvingSymlinksInPath().standardizedFileURL
 
             for asset in selected {
                 do {
                     let id = stableID(asset.localIdentifier)
-                    let filename = id + ".jpg"
-                    let destination = output.appendingPathComponent(filename)
-                    if !FileManager.default.fileExists(atPath: destination.path) {
+                    let modifiedAt = asset.modificationDate.map { iso.string(from: $0) }
+                    let old = previous[id]
+                    let isVideo = asset.mediaType == .video
+                    let oldURL = old.map { URL(fileURLWithPath: isVideo ? ($0.thumbnailPath ?? $0.path) : $0.path) }
+                    let oldDate = oldURL.flatMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate }
+                    let legacyUnchanged = old?.modifiedAt == nil
+                        && (asset.modificationDate.map { $0 <= (oldDate ?? .distantPast) } ?? true)
+                    let sameKindAndSize = (old?.mediaType ?? "image") == (isVideo ? "video" : "image")
+                        && old?.width == asset.pixelWidth && old?.height == asset.pixelHeight
+                    let oldRegularFile = oldURL.map { url in
+                        let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                        return values?.isRegularFile == true && values?.isSymbolicLink != true
+                    } == true
+                    let reusable = old != nil && sameKindAndSize && oldRegularFile
+                        && (old?.modifiedAt == modifiedAt || legacyUnchanged)
+                    let version = stableID(modifiedAt ?? asset.creationDate.map { iso.string(from: $0) } ?? "original")
+                    let filename = id + "-" + version.suffix(12) + ".jpg"
+                    var destination = reusable ? oldURL! : output.appendingPathComponent(filename)
+                    if !reusable {
                         let image = try requestPreview(asset: asset, manager: manager)
                         let data = try jpegData(image, identifier: asset.localIdentifier)
-                        try data.write(to: destination, options: .atomic)
+                        if let oldURL, oldRegularFile, sameKindAndSize,
+                           oldURL.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL == outputDir,
+                           oldURL.pathExtension.lowercased() == "jpg",
+                           (try? Data(contentsOf: oldURL)) == data {
+                            destination = oldURL
+                        } else {
+                            try data.write(to: destination, options: .atomic)
+                            regenerated += 1
+                        }
                     }
+                    let thumbnail = destination
                     let record = ExportRecord(
                         id: id,
                         localIdentifier: asset.localIdentifier,
                         path: destination.path,
-                        filename: filename,
+                        filename: id + (isVideo ? ".mov" : ".jpg"),
                         capturedAt: asset.creationDate.map { iso.string(from: $0) },
                         width: asset.pixelWidth,
                         height: asset.pixelHeight,
                         favorite: asset.isFavorite,
-                        mediaSubtypes: asset.mediaSubtypes.rawValue
+                        mediaSubtypes: asset.mediaSubtypes.rawValue,
+                        modifiedAt: modifiedAt,
+                        thumbnailPath: thumbnail.path,
+                        mediaType: isVideo ? "video" : "image",
+                        duration: isVideo ? asset.duration : nil
                     )
                     let encoded = try encoder.encode(record)
                     lines.append(String(decoding: encoded, as: UTF8.self))
                 } catch {
                     failures += 1
+                    failedIDs.append(stableID(asset.localIdentifier))
                     FileHandle.standardError.write(Data("export error: \(error)\n".utf8))
                 }
             }
 
-            let manifest = output.appendingPathComponent("manifest.jsonl")
             try (lines.joined(separator: "\n") + (lines.isEmpty ? "" : "\n"))
                 .write(to: manifest, atomically: true, encoding: .utf8)
             let result = output.appendingPathComponent("result.json")
-            let resultJSON = "{\"exported\":\(lines.count),\"failed\":\(failures),\"strategy\":\"\(strategy)\",\"library_images\":\(assets.count),\"manifest\":\"\(manifest.path)\"}"
+            let payload: [String: Any] = [
+                "exported": lines.count, "failed": failures, "regenerated": regenerated,
+                "strategy": strategy, "library_assets": assets.count,
+                "library_images": selected.filter { $0.mediaType == .image }.count,
+                "library_videos": selected.filter { $0.mediaType == .video }.count,
+                "manifest": manifest.path,
+                "full_snapshot": strategy == "all" && argument("--media-type") == nil && status == .authorized && selected.count == assets.count,
+                "present_ids": selected.map { stableID($0.localIdentifier) }, "failed_ids": failedIDs
+            ]
+            let resultJSON = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
             try resultJSON.write(to: result, atomically: true, encoding: .utf8)
             print(resultJSON)
         } catch {
+            if let output = argument("--output"),
+               let data = try? JSONSerialization.data(withJSONObject: ["error": String(describing: error)]) {
+                try? data.write(to: URL(fileURLWithPath: output).appendingPathComponent("result.json"), options: .atomic)
+            }
             FileHandle.standardError.write(Data("photo-export: \(error)\n".utf8))
             Foundation.exit(1)
         }

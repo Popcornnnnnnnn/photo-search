@@ -5,9 +5,10 @@ import Darwin
 enum ModelProviderKind: String, Codable, CaseIterable, Identifiable {
     case local
     case cloud
+    case chatgpt
 
     var id: String { rawValue }
-    var title: String { rawValue.capitalized }
+    var title: String { self == .chatgpt ? "ChatGPT" : rawValue.capitalized }
 }
 
 struct ModelProviderProfile: Codable, Equatable, Identifiable {
@@ -20,6 +21,8 @@ struct ModelProviderProfile: Codable, Equatable, Identifiable {
     var requiresTailscale: Bool
     var jsonMode: Bool
     var qwenThinkingControl: Bool
+    var reasoningEffort: String? = nil
+    var chatgptAccountID: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, name, kind, model, producer
@@ -27,6 +30,8 @@ struct ModelProviderProfile: Codable, Equatable, Identifiable {
         case requiresTailscale = "requires_tailscale"
         case jsonMode = "json_mode"
         case qwenThinkingControl = "qwen_thinking_control"
+        case reasoningEffort = "reasoning_effort"
+        case chatgptAccountID = "chatgpt_account_id"
     }
 
     static let qwen4090 = ModelProviderProfile(
@@ -39,6 +44,21 @@ struct ModelProviderProfile: Codable, Equatable, Identifiable {
         requiresTailscale: true,
         jsonMode: true,
         qwenThinkingControl: true
+    )
+
+    static let localQwen27B = ModelProviderProfile(
+        id: "qwen-local-27b",
+        name: "Local Qwen 27B",
+        kind: .local,
+        baseURL: "http://127.0.0.1:1234/v1",
+        model: "qwen3.8-27b-uncensored",
+        producer: "qwen-vlm-local",
+        requiresTailscale: false,
+        // LM Studio rejects response_format.type = json_object. The prompt
+        // still requests JSON, which the backend parses and validates.
+        jsonMode: false,
+        qwenThinkingControl: false,
+        reasoningEffort: "none"
     )
 
     static func custom() -> ModelProviderProfile {
@@ -55,6 +75,13 @@ struct ModelProviderProfile: Codable, Equatable, Identifiable {
             qwenThinkingControl: false
         )
     }
+
+    static func chatGPT(accountID: String, model: String) -> ModelProviderProfile {
+        ModelProviderProfile(id: "chatgpt-plan", name: "ChatGPT", kind: .chatgpt,
+                             baseURL: "https://api.openai.com/v1", model: model,
+                             producer: "chatgpt-plan", requiresTailscale: false,
+                             jsonMode: false, qwenThinkingControl: false, chatgptAccountID: accountID)
+    }
 }
 
 struct ModelProviderFile: Codable, Equatable {
@@ -62,11 +89,23 @@ struct ModelProviderFile: Codable, Equatable {
     var activeProviderID: String
     var reprocessExisting: Bool
     var providers: [ModelProviderProfile]
+    var fallbackProviderID: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case version, providers
         case activeProviderID = "active_provider_id"
         case reprocessExisting = "reprocess_existing"
+        case fallbackProviderID = "fallback_provider_id"
+    }
+
+    func effectiveProvider(worker: PhotoWorkerStatus.Snapshot?) -> ModelProviderProfile? {
+        if let worker, [.indexing, .waiting, .complete, .completeWithErrors].contains(worker.activity),
+           worker.payload.requestedProviderId == activeProviderID,
+           worker.payload.providerId == fallbackProviderID, fallbackProviderID != nil,
+           let fallback = providers.first(where: { $0.id == fallbackProviderID }) {
+            return fallback
+        }
+        return providers.first { $0.id == activeProviderID }
     }
 
     static let `default` = ModelProviderFile(
@@ -117,8 +156,8 @@ final class ModelProviderSettings {
         return Self.readAPIKey(providerID: draftProvider.id) != nil
     }
 
-    func beginAddingProvider() {
-        draftProvider = .custom()
+    func beginAddingProvider(_ profile: ModelProviderProfile = .custom()) {
+        draftProvider = profile
         draftAPIKey = ""
         draftReprocessExisting = configuration.reprocessExisting
         isAddingProvider = true
@@ -147,6 +186,7 @@ final class ModelProviderSettings {
         guard var provider = draftProvider else { throw ProviderSettingsError.noProvider }
         try Self.validate(&provider)
         let wasActive = provider.id == configuration.activeProviderID
+            || provider.id == configuration.fallbackProviderID
         if let index = configuration.providers.firstIndex(where: { $0.id == provider.id }) {
             configuration.providers[index] = provider
         } else {
@@ -165,8 +205,33 @@ final class ModelProviderSettings {
 
     func activateProvider(_ provider: ModelProviderProfile) throws {
         configuration.activeProviderID = provider.id
+        if provider.id != ModelProviderProfile.qwen4090.id {
+            configuration.fallbackProviderID = nil
+        } else if configuration.fallbackProviderID == nil {
+            configuration.fallbackProviderID = configuration.providers.first { $0.id == ModelProviderProfile.localQwen27B.id }?.id
+        }
         try persist(restartWorker: true)
         savedMessage = "Using \(provider.name)."
+    }
+
+    /// Saving a login/model never changes the primary or enables cloud uploads.
+    func saveChatGPT(accountID: String, model: String) throws {
+        let profile = ModelProviderProfile.chatGPT(accountID: accountID, model: model)
+        if let index = configuration.providers.firstIndex(where: { $0.id == profile.id }) {
+            configuration.providers[index] = profile
+        } else {
+            configuration.providers.append(profile)
+        }
+        try persist(restartWorker: false)
+    }
+
+    func selectFallback(_ id: String?) throws {
+        guard id == nil || configuration.providers.contains(where: { $0.id == id && $0.id != configuration.activeProviderID }) else {
+            throw ProviderSettingsError.noProvider
+        }
+        configuration.fallbackProviderID = id
+        try persist(restartWorker: false)
+        Self.resumeWorker()
     }
 
     func deleteDraftProvider() throws {
@@ -175,6 +240,7 @@ final class ModelProviderSettings {
             throw ProviderSettingsError.cannotDeleteActive
         }
         configuration.providers.removeAll { $0.id == provider.id }
+        if configuration.fallbackProviderID == provider.id { configuration.fallbackProviderID = nil }
         Self.deleteAPIKey(providerID: provider.id)
         try persist(restartWorker: false)
         savedMessage = "Removed \(provider.name)."
@@ -185,14 +251,7 @@ final class ModelProviderSettings {
         guard let provider = draftProvider else { return }
         connectionState = .testing
         do {
-            let baseURL = provider.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            guard let url = URL(string: "\(baseURL)/models") else {
-                throw ProviderSettingsError.invalidURL
-            }
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 10
-            let key = draftAPIKey.isEmpty ? Self.readAPIKey(providerID: provider.id) : draftAPIKey
-            if let key, !key.isEmpty { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
+            let request = try Self.connectionRequest(for: provider, apiKey: draftAPIKey.isEmpty ? nil : draftAPIKey)
             let (_, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
                 throw ProviderSettingsError.connectionRejected
@@ -202,6 +261,26 @@ final class ModelProviderSettings {
             connectionState = .failure(error.localizedDescription)
         }
     }
+
+    static func connectionRequest(for provider: ModelProviderProfile, apiKey: String? = nil) throws -> URLRequest {
+        let baseURL = provider.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(baseURL)/models") else {
+            throw ProviderSettingsError.invalidURL
+        }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData,
+                                 timeoutInterval: Self.connectionTimeout)
+        let key = apiKey ?? Self.readAPIKey(providerID: provider.id)
+        if let key, !key.isEmpty { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
+        return request
+    }
+
+    /// Generous enough for a healthy model reached over a relayed path. The
+    /// private 4090 normally answers a small `/models` probe in well under a
+    /// second, but when Tailscale cannot punch a direct connection the same
+    /// probe can take several seconds, and an 8-second ceiling reported a
+    /// perfectly healthy service as unavailable. A genuinely offline service
+    /// still fails fast with a refused connection.
+    static let connectionTimeout: TimeInterval = 20
 
     private static func validate(_ provider: inout ModelProviderProfile) throws {
         provider.name = provider.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -283,10 +362,19 @@ final class ModelProviderSettings {
         SecItemDelete(keychainQuery(providerID: providerID) as CFDictionary)
     }
 
+    static func resumeWorker() {
+        startWorker(restart: false)
+    }
+
     private static func restartWorker() {
+        startWorker(restart: true)
+    }
+
+    private static func startWorker(restart: Bool) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = ["kickstart", "-k", "gui/\(getuid())/com.popcornnn.photo-search.worker"]
+        process.arguments = ["kickstart"] + (restart ? ["-k"] : [])
+            + ["gui/\(getuid())/com.popcornnn.photo-search.worker"]
         try? process.run()
     }
 }
