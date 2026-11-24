@@ -11,8 +11,8 @@ Search your local Apple Photos and video library right inside Raycast using natu
 
 ## Requirements
 
-1. macOS 15 or later with **[Photo Search.app](https://github.com/Popcornnnnnnnn/photo-search)** installed (default path: `/Applications/Photo Search.app`).
-2. An indexed Photos library created inside Photo Search.
+1. macOS 15 or later with **[Photo Search.app](https://github.com/Popcornnnnnnnn/photo-search/releases)** installed from the signed, notarized GitHub Release DMG (default path: `/Applications/Photo Search.app`).
+2. A local library index created inside **Photo Search**: launch the app, grant Photos access, and follow the built-in on-device Apple Vision onboarding (no terminal setup required; optional local `Qwen3-VL-Embedding-2B` or VLM enrichment can be configured in Settings).
 
 ## Commands
 
@@ -42,8 +42,7 @@ npm run dev
 
 Or open Raycast → **Import Extension** and select the `raycast/` folder.
 
-## Before Submitting to the Raycast Store
+## Privacy & Store Metadata
 
-1. Publish a signed, notarized public release of `Photo Search.app` (and update download instructions).
-2. Confirm the `author` handle in `package.json` matches your published Raycast Store account.
-3. Capture extension screenshots for the Raycast Store listing (`metadata/`).
+- Search requests communicate exclusively over the local Unix domain socket (`~/Library/Application Support/PhotoSearch/search.sock`).
+- No personal photos leave your Mac during default on-device Vision indexing; Store screenshots in `metadata/` use synthetic sample imagery.
